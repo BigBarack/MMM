@@ -1,0 +1,38 @@
+TO-DO
+
+
+PSEUDOCODE 
+
+Legend:
+V = version made
+!!! = priority
+
+
+GEOMETRY
+    Create the pml!!!
+    Define edges as PEC!!!
+    Drude media masks Adder
+    Create the mask
+
+Update schemes!!!
+    Define the fields!!!
+        let us start with a 100 by 100 
+    Define the update equations according to non-uniform yee fdtd!!!
+    Idea add  TM Equations
+    
+    implement boundary conditions!!!
+
+    possibility to look at other schemes
+
+Plane wave sources
+    Do this with the total-field/scattered-field method in chapter 5 read upon later!!!
+    Side not we can replace phase velocity with can
+    make it a gaussian pulse form 
+
+
+    Add a frequency domain analysys
+
+Visualisation
+    do a time domain animation
+    analytical solution for scattering from cylindrical PMC
+    we can also analyse scattering at well chosen dielectric objects
