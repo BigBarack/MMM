@@ -1,12 +1,17 @@
 import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import ArtistAnimation
+from scipy import ndimage
 
 
 #Physical constants
-Eps0=
-Mu=
+epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
+mu_0 = 4 * np.pi * 1e-7        # H/m (permeability of vacuum)
+c = 1 / np.sqrt(mu_0 * epsilon_0)  # Speed of light in vacuum
 
-Epsilon=
+epsilon= epsilon_0*np.ones((100,100))
 
+#initialization of the fields!
 
 Ex= np.zeros((100,100))
 Ey= np.zeros((100,100))
@@ -27,21 +32,24 @@ def update_equations(Ex, Ey, Hz, dx, dy, dt, epsilon, mu):
         Updated Ex, Ey, Hz fields
     """
     # Calculate update coefficients
-    Cex = dt / (epsilon * dy)
-    Cey = -dt / (epsilon * dx)
-    Chz = dt / mu
+    Cex = dt*dx / (epsilon * dy)
+    Cey = -dt*dy/ (epsilon * dx)
+    Chz = -dt/(dx*dy*mu)
     
     # Get grid dimensions
     nx, ny = Hz.shape
     
+
+    Eyn = Ey*dy
+    Exn = Ex*dx
     # Update Hz field (curl of E)
-    Hz[1:nx, 1:ny] += Chz[1:nx, 1:ny] * (
-        (Ex[1:nx, 1:ny] - Ex[1:nx, :ny-1]) / dy[1:nx, 1:ny] -
-        (Ey[1:nx, 1:ny] - Ey[:nx-1, 1:ny]) / dx[1:nx, 1:ny]
+    Hz[1:nx, 1:ny] +=  Chz[1:nx,1:ny]*(
+        (Eyn[1:nx, 1:ny] - Eyn[:nx-1, 1:ny])- 
+        (Exn[1:nx, :ny-1] - Exn[1:nx, 1:ny])
     )
     
     # Update Ex field (y-derivative of Hz)
-    Ex[:, :ny-1] += Cex[:, :ny-1] * (
+    Exn[:,:ny-1] += Cex[:, :ny-1] * (
         Hz[:, 1:ny] - Hz[:, :ny-1]
     )
     
@@ -51,3 +59,6 @@ def update_equations(Ex, Ey, Hz, dx, dy, dt, epsilon, mu):
     )
     
     return Ex, Ey, Hz
+
+
+
