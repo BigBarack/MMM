@@ -61,7 +61,6 @@ class Scatterer:
         :return: same shape as inputs (better to use arrays)
         """
         if self.shape == 'rectangle':
-            a , b = self.get_bounds()
             x_min , x_max = self.geometry['xi'], self.geometry['xf']
             y_min , y_max = self.geometry['yi'], self.geometry['yf']
             return (X >= x_min) & (X <= x_max) & (Y >= y_min) & (Y <= y_max)
@@ -73,17 +72,22 @@ class FDTD:
 
     def __init__(self, Lx:float , Ly:float , PW , scatterer_list:list , observation_points):
 
+        # constants
+        self.epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
+        self.mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
+        self.c = 1 / np.sqrt(self.mu_0 * self.epsilon_0)  # Speed of light in vacuum
         self.Lx = Lx
         self.Ly = Ly
-        self.lmin = PW      #fix after ch5
+        self.lmin = PW      #fix after ch5 implementation (need to choose waveform for now)
+        self.dt = PW/ self.c    #fix
         self.dx_coarse = self.lmin / 10
         self.dx_inter1 = self.dx_coarse / ( 2 ** (1/3) )
         self.dx_inter2 = self.dx_inter1 / ( 2 ** (1/3) )
         self.dx_fine = self.lmin / 20
         self.scatterer_list = scatterer_list
         self.observation_points = observation_points
-        print(f'Lx,Ly is {self.Lx},{self.Ly}, l_min is {self.lmin} and dx_coarse is {self.dx_coarse}, matching '
-              f' dx = lmin/10 {np.abs(self.dx_coarse- self.lmin/10 )< 0.001}')
+        # print(f'Lx,Ly is {self.Lx},{self.Ly}, l_min is {self.lmin} and dx_coarse is {self.dx_coarse}, matching '
+        #       f' dx = lmin/10 {np.abs(self.dx_coarse- self.lmin/10 )< 0.001}')            # debugger
         # generate grid; from physical x,y to discrete
         x = [0.0]
         x0 = 0.0  # running cursor
@@ -147,13 +151,18 @@ class FDTD:
         x_centers = 0.5 * (self.x_edges[:-1] + self.x_edges[1:])
         y_centers = 0.5 * (self.y_edges[:-1] + self.y_edges[1:])
         self.Xc, self.Yc = np.meshgrid(x_centers, y_centers, indexing='xy')
+        _ , self.DY_Ex = np.meshgrid(x_centers ,self.dy_dual, indexing='xy')
+        self.DX_Ey , _ = np.meshgrid(self.dx_dual, y_centers, indexing='xy')
+        self.DX_Hz, self.DY_Hz = np.meshgrid(self.dx, self.dy, indexing='xy')
+
         # initialize fields
         self.Hz = np.zeros_like(self.Xc)
         Ny, Nx = self.Hz.shape
+        print(f"Ny:{Ny}, Nx:{Nx}")
         self.Ex = np.zeros((Ny-1,Nx))
         self.Ey = np.zeros((Ny, Nx-1))
         # generate mask
-        self.mask_Hz = np.zeros_like(self.Xc)
+        self.mask_Hz = np.zeros_like(self.Hz)
         self.mask_Ex = np.zeros_like(self.Ex)
         self.mask_Ey = np.zeros_like(self.Ey)
         _ , Y_edges = np.meshgrid(x_centers, self.y_edges[1:-1], indexing='xy') #for Ex
@@ -191,9 +200,43 @@ class FDTD:
                     status = 'intermediate'
         return status
 
-    # def update(self):
+    def update(self):
         # in 0
-        # self.
+
+        # print(f'DY shape{self.DY_Ex.shape} , Ex {self.Ex.shape} ,self.Hz[1:,:] {self.Hz[1:,:].shape} ')
+        # 
+        # print(f'self.Ey {self.Ey.shape}, Hz[:,:-1] {self.Hz[:, :-1].shape}, self.DX {self.DX_Ey.shape}')
+        # 
+        # print(f'self.Hz {self.Hz.shape}, (self.Ex[1:,:] - self.Ex[:-1,:]) {(self.Ex[1:,:] - self.Ex[:-1,:]).shape}'
+        #       f',(self.Ey[:,:-1] - self.Ey[:,1:]){(self.Ey[:,:-1] - self.Ey[:,1:]).shape},'
+        #       f'self.DY_Hz {self.DY_Hz.shape}, self.DX_Hz {self.DX_Hz .shape}')
+
+        self.Ex += self.dt / self.epsilon_0 * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex
+        self.Ey += self.dt / self.epsilon_0 * (self.Hz[:,:-1] - self.Hz[:,1:]) / self.DX_Ey
+        self.Hz[1:-1,1:-1] += self.dt / self.mu_0 * ( ((self.Ex[1:,1:-1] - self.Ex[:-1,1:-1]) / self.DY_Hz[1:-1,1:-1] ) +
+                                           (self.Ey[1:-1,:-1] - self.Ey[1:-1,1:]) / self.DX_Hz[1:-1,1:-1] )
+        # BC PEC = tangential electric field set to zero
+        # top BC
+        self.Hz[0,1:-1] += self.dt / self.mu_0 * ( ((self.Ex[0,1:-1] - 0 ) / self.DY_Hz[0,1:-1] ) +
+                                           (self.Ey[0,:-1] - self.Ey[0,1:]) / self.DX_Hz[0,1:-1] )
+        # bot BC
+        self.Hz[-1,1:-1] += self.dt / self.mu_0 * ( ((0 - self.Ex[-1,1:-1]) / self.DY_Hz[-1,1:-1] ) +
+                                           (self.Ey[-1,:-1] - self.Ey[-1,1:]) / self.DX_Hz[-1,1:-1] )
+        # left BC
+        self.Hz[1:-1,0] += self.dt / self.mu_0 * ( ((self.Ex[1:,0] - self.Ex[:-1,0]) / self.DY_Hz[1:-1,0] ) +
+                                           ( 0 - self.Ey[1:-1,0]) / self.DX_Hz[1:-1,0] )
+        # right BC
+        self.Hz[1:-1,-1] += self.dt / self.mu_0 * ( ((self.Ex[1:,-1] - self.Ex[:-1,-1]) / self.DY_Hz[1:-1,-1] ) +
+                                           (self.Ey[1:-1,-1] - 0 ) / self.DX_Hz[1:-1,-1] )
+        # corners tl, tr, bl, br
+        self.Hz[0,0] += self.dt / self.mu_0 * ( ((self.Ex[0,0] - 0) / self.DY_Hz[0,0] ) +
+                                           ( 0 - self.Ey[0,0]) / self.DX_Hz[0,0] )
+        self.Hz[0,-1] += self.dt / self.mu_0 * ( ((self.Ex[0,-1] - 0) / self.DY_Hz[0,-1] ) +
+                                           ( self.Ey[0,-1] - 0) / self.DX_Hz[0,-1] )
+        self.Hz[-1,0] += self.dt / self.mu_0 * ( (( 0 - self.Ex[-1,0]) / self.DY_Hz[-1,0] ) +
+                                           ( 0 - self.Ey[-1,0]) / self.DX_Hz[-1,0] )
+        self.Hz[-1,-1] += self.dt / self.mu_0 * ( (( 0 - self.Ex[-1,-1]) / self.DY_Hz[-1,-1] ) +
+                                           (self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1] )
 
     def source_pw(self, Aetc):
         pass
@@ -283,5 +326,5 @@ def user_inputs():
 sim = FDTD(*user_inputs())
 
 sim.debugger(show_grid=True)
-
+sim.update()
 
