@@ -86,7 +86,7 @@ for t in tint:
 
     I=np.sqrt((Ey*Hz)**2+(Ex*Hz)**2)
     pcm.set_array(I)
-    plt.pause(0.01)
+
 
 
 plot.show()

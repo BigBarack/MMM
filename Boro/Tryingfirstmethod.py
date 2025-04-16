@@ -22,6 +22,7 @@ dt = CFL / (c * np.sqrt((1/dx**2) + (1/dy**2)))
 # Initialize fields with a pulse
 def gaussian_pulse(t, A=1, tc=30, sigma=10):
     return A * np.exp(-((t - tc)**2) / (2 * sigma**2))
+def sin_wave(t,A=1,tc=30)
 
 
 # Create figure
