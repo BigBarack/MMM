@@ -38,7 +38,7 @@ def update_equations(Ex, Ey, Hz):
         Updated Ex, Ey, Hz fields
     """
     # Calculate update coefficients
-    Cex = dt*dx / (epsilon * dy)
+    Cex = dt / (epsilon * dy)
     Cey = -dt/ (epsilon * dx)
     Chz = -dt/(dx*dy*mu_0)
 
