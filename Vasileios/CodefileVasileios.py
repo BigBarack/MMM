@@ -28,6 +28,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 
+def cross_average2Drray(arr):
+    """
+    takes given array and returns an elements-wise cross average new array
+    would have been useful to treat boundaries in the updates insteaad of explicitly handling
+    the PEC ghost cells
+    :param arr: 2D array to be padded and averaged
+    :return: cross average of array
+    """
+    padded = np.pad(arr,1,mode='edge')
+    cross_avg = (padded[1:-1,1:-1] + padded[:-2,1:-1] + padded[2:,1:-1] + padded[1:-1,:-2] + padded[1:-1,2:] ) / 5
+    return cross_avg
+
 class Scatterer:
 
     def __init__(self , shape:str , material:str , ID:int , geometry:dict , properties:dict ):
@@ -161,6 +173,10 @@ class FDTD:
         print(f"Ny:{Ny}, Nx:{Nx}")
         self.Ex = np.zeros((Ny-1,Nx))
         self.Ey = np.zeros((Ny, Nx-1))
+        self.epsilon_grid = np.full(self.Hz.shape,self.epsilon_0)
+        self.epsilon_yavg = np.zeros_like(self.Ex)                 #epsilon spatially averaged over y, used for Ex update
+        self.epsilon_xavg = np.zeros_like(self.Ey)                 #epsilon spatially averaged over x, used for Ey update
+        self.mu_grid = np.full(self.Hz.shape, self.mu_0)
         # generate mask
         self.mask_Hz = np.zeros_like(self.Hz)
         self.mask_Ex = np.zeros_like(self.Ex)
@@ -175,7 +191,14 @@ class FDTD:
             self.mask_Hz[inside_z] = scatterer.ID
             self.mask_Ex[inside_x] = scatterer.ID
             self.mask_Ey[inside_y] = scatterer.ID
-
+        for scatterer in self.scatterer_list:
+            if scatterer.material == 'Drude':
+                self.epsilon_grid[self.mask_Hz == scatterer.ID] = scatterer.properties['e']
+                self.mu_grid[self.mask_Hz == scatterer.ID] = scatterer.properties['m']
+                #unphysical, is storing e_0,m_0 for PEC & PMC, used for the avg, locations with PMC/PEC use BC updates
+        self.epsilon_yavg = (self.epsilon_grid[:-1, :] + self.epsilon_grid[1:, :]) / 2
+        self.epsilon_xavg = (self.epsilon_grid[:,:-1] + self.epsilon_grid[:,1:]) / 2
+        self.mu_crossavg = cross_average2Drray(self.mu_grid)
 
     def in_refined_region(self, pos:float , axis:str):
         """
@@ -204,39 +227,46 @@ class FDTD:
         # in 0
 
         # print(f'DY shape{self.DY_Ex.shape} , Ex {self.Ex.shape} ,self.Hz[1:,:] {self.Hz[1:,:].shape} ')
-        # 
+        #
         # print(f'self.Ey {self.Ey.shape}, Hz[:,:-1] {self.Hz[:, :-1].shape}, self.DX {self.DX_Ey.shape}')
-        # 
+        #
         # print(f'self.Hz {self.Hz.shape}, (self.Ex[1:,:] - self.Ex[:-1,:]) {(self.Ex[1:,:] - self.Ex[:-1,:]).shape}'
         #       f',(self.Ey[:,:-1] - self.Ey[:,1:]){(self.Ey[:,:-1] - self.Ey[:,1:]).shape},'
         #       f'self.DY_Hz {self.DY_Hz.shape}, self.DX_Hz {self.DX_Hz .shape}')
 
-        self.Ex += self.dt / self.epsilon_0 * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex
-        self.Ey += self.dt / self.epsilon_0 * (self.Hz[:,:-1] - self.Hz[:,1:]) / self.DX_Ey
-        self.Hz[1:-1,1:-1] += self.dt / self.mu_0 * ( ((self.Ex[1:,1:-1] - self.Ex[:-1,1:-1]) / self.DY_Hz[1:-1,1:-1] ) +
+        # self.Ex += self.dt / self.epsilon_0 * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex
+        self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex
+        # self.Ey += self.dt / self.epsilon_0 * (self.Hz[:,:-1] - self.Hz[:,1:]) / self.DX_Ey
+        self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey
+
+        self.Hz[1:-1,1:-1] += self.dt / self.mu_grid[1:-1,1:-1] * ( ((self.Ex[1:,1:-1] - self.Ex[:-1,1:-1]) / self.DY_Hz[1:-1,1:-1] ) +
                                            (self.Ey[1:-1,:-1] - self.Ey[1:-1,1:]) / self.DX_Hz[1:-1,1:-1] )
         # BC PEC = tangential electric field set to zero
         # top BC
-        self.Hz[0,1:-1] += self.dt / self.mu_0 * ( ((self.Ex[0,1:-1] - 0 ) / self.DY_Hz[0,1:-1] ) +
-                                           (self.Ey[0,:-1] - self.Ey[0,1:]) / self.DX_Hz[0,1:-1] )
+        self.Hz[0,1:-1] += self.dt / self.mu_crossavg[0,1:-1] * ( ((self.Ex[0,1:-1] - 0 ) / self.DY_Hz[0,1:-1] ) +
+                                           ((self.Ey[0,:-1] - self.Ey[0,1:]) / self.DX_Hz[0,1:-1]) )
         # bot BC
-        self.Hz[-1,1:-1] += self.dt / self.mu_0 * ( ((0 - self.Ex[-1,1:-1]) / self.DY_Hz[-1,1:-1] ) +
-                                           (self.Ey[-1,:-1] - self.Ey[-1,1:]) / self.DX_Hz[-1,1:-1] )
+        self.Hz[-1,1:-1] += self.dt / self.mu_crossavg[-1,1:-1] * ( ((0 - self.Ex[-1,1:-1]) / self.DY_Hz[-1,1:-1] ) +
+                                           ((self.Ey[-1,:-1] - self.Ey[-1,1:]) / self.DX_Hz[-1,1:-1]) )
         # left BC
-        self.Hz[1:-1,0] += self.dt / self.mu_0 * ( ((self.Ex[1:,0] - self.Ex[:-1,0]) / self.DY_Hz[1:-1,0] ) +
-                                           ( 0 - self.Ey[1:-1,0]) / self.DX_Hz[1:-1,0] )
+        self.Hz[1:-1,0] += self.dt / self.mu_crossavg[1:-1,0] * ( ((self.Ex[1:,0] - self.Ex[:-1,0]) / self.DY_Hz[1:-1,0] ) +
+                                           (( 0 - self.Ey[1:-1,0]) / self.DX_Hz[1:-1,0]) )
         # right BC
-        self.Hz[1:-1,-1] += self.dt / self.mu_0 * ( ((self.Ex[1:,-1] - self.Ex[:-1,-1]) / self.DY_Hz[1:-1,-1] ) +
-                                           (self.Ey[1:-1,-1] - 0 ) / self.DX_Hz[1:-1,-1] )
+        self.Hz[1:-1,-1] += self.dt / self.mu_crossavg[1:-1,-1] * ( ((self.Ex[1:,-1] - self.Ex[:-1,-1]) / self.DY_Hz[1:-1,-1] ) +
+                                           ((self.Ey[1:-1,-1] - 0 ) / self.DX_Hz[1:-1,-1]) )
         # corners tl, tr, bl, br
-        self.Hz[0,0] += self.dt / self.mu_0 * ( ((self.Ex[0,0] - 0) / self.DY_Hz[0,0] ) +
+        self.Hz[0,0] += self.dt / self.mu_crossavg[0,0] * ( ((self.Ex[0,0] - 0) / self.DY_Hz[0,0] ) +
                                            ( 0 - self.Ey[0,0]) / self.DX_Hz[0,0] )
-        self.Hz[0,-1] += self.dt / self.mu_0 * ( ((self.Ex[0,-1] - 0) / self.DY_Hz[0,-1] ) +
-                                           ( self.Ey[0,-1] - 0) / self.DX_Hz[0,-1] )
-        self.Hz[-1,0] += self.dt / self.mu_0 * ( (( 0 - self.Ex[-1,0]) / self.DY_Hz[-1,0] ) +
-                                           ( 0 - self.Ey[-1,0]) / self.DX_Hz[-1,0] )
-        self.Hz[-1,-1] += self.dt / self.mu_0 * ( (( 0 - self.Ex[-1,-1]) / self.DY_Hz[-1,-1] ) +
-                                           (self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1] )
+        self.Hz[0,-1] += self.dt / self.mu_crossavg[0,-1] * ( ((self.Ex[0,-1] - 0) / self.DY_Hz[0,-1] ) +
+                                           (( self.Ey[0,-1] - 0) / self.DX_Hz[0,-1]) )
+        self.Hz[-1,0] += self.dt / self.mu_crossavg[-1,0] * ( (( 0 - self.Ex[-1,0]) / self.DY_Hz[-1,0] ) +
+                                           (( 0 - self.Ey[-1,0]) / self.DX_Hz[-1,0]) )
+        self.Hz[-1,-1] += self.dt / self.mu_crossavg[-1,-1] * ( (( 0 - self.Ex[-1,-1]) / self.DY_Hz[-1,-1] ) +
+                                           ((self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1]) )
+
+        #here include logic for sc.type -> set 0 or whatever...
+
+
 
     def source_pw(self, Aetc):
         pass
