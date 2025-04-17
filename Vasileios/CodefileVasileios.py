@@ -60,7 +60,7 @@ class Scatterer:
         self.ID = ID                    #useful for up-eq and mask
         self.material = material        #pec / pmc / drude
         self.geometry = geometry        #depends on shape
-        self.properties = properties    #e,m
+        self.properties = properties    #e,m,sigma_DC,gamma
 
 
     def get_bounds(self):
@@ -111,6 +111,7 @@ class FDTD:
         self.dx_fine = self.lmin / 20
         self.scatterer_list = scatterer_list
         self.observation_points = observation_points
+        self.there_is_Drude = any([ scat.material == 'Drude' for scat in scatterer_list])
         # print(f'Lx,Ly is {self.Lx},{self.Ly}, l_min is {self.lmin} and dx_coarse is {self.dx_coarse}, matching '
         #       f' dx = lmin/10 {np.abs(self.dx_coarse- self.lmin/10 )< 0.001}')            # debugger
         # generate grid; from physical x,y to discrete
@@ -190,6 +191,8 @@ class FDTD:
         self.epsilon_yavg = np.zeros_like(self.Ex)                 #epsilon spatially averaged over y, used for Ex update
         self.epsilon_xavg = np.zeros_like(self.Ey)                 #epsilon spatially averaged over x, used for Ey update
         self.mu_grid = np.full(self.Hz.shape, self.mu_0)
+        self.Jcx = np.zeros_like(self.Ex)
+        self.Jcy = np.zeros_like(self.Ey)
         # generate mask
         self.mask_Hz = np.zeros_like(self.Hz)
         self.mask_Ex = np.zeros_like(self.Ex)
@@ -222,6 +225,7 @@ class FDTD:
             obs.coordinates['hz'] = (iy_from_edges,ix_from_edges)
             obs.coordinates['ex'] = (iy_from_c,ix_from_edges)
             obs.coordinates['ey'] = (iy_from_edges,ix_from_c)
+        self.update_observation_points()
 
 
     def in_refined_region(self, pos:float , axis:str):
@@ -263,6 +267,18 @@ class FDTD:
         # self.Ey += self.dt / self.epsilon_0 * (self.Hz[:,:-1] - self.Hz[:,1:]) / self.DX_Ey
         self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey
 
+        if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
+            for scatterer in self.scatterer_list:
+                if scatterer.material == 'Drude':
+                    g = scatterer.properties['gamma']
+                    sigma = scatterer.properties['sigma_DC']
+                    maskx = self.mask_Ex == scatterer.ID
+                    masky = self.mask_Ey == scatterer.ID
+                    self.Jcx[maskx] = (1 - self.dt / g) * self.Jcx[maskx] + self.Ex[maskx] * self.dt * sigma / g
+                    self.Jcy[masky] = (1 - self.dt / g) * self.Jcy[masky] + self.Ey[masky] * self.dt * sigma / g
+                    self.Ex[maskx] -= self.dt * self.Jcx[maskx] / self.epsilon_yavg[maskx]
+                    self.Ey[masky] -= self.dt * self.Jcy[masky] / self.epsilon_xavg[masky]
+
         self.Hz[1:-1,1:-1] += self.dt / self.mu_grid[1:-1,1:-1] * ( ((self.Ex[1:,1:-1] - self.Ex[:-1,1:-1]) / self.DY_Hz[1:-1,1:-1] ) +
                                            (self.Ey[1:-1,:-1] - self.Ey[1:-1,1:]) / self.DX_Hz[1:-1,1:-1] )
         # BC PEC = tangential electric field set to zero
@@ -287,8 +303,8 @@ class FDTD:
                                            (( 0 - self.Ey[-1,0]) / self.DX_Hz[-1,0]) )
         self.Hz[-1,-1] += self.dt / self.mu_crossavg[-1,-1] * ( (( 0 - self.Ex[-1,-1]) / self.DY_Hz[-1,-1] ) +
                                            ((self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1]) )
+        self.update_observation_points()
 
-        #here include logic for sc.type -> set 0 or whatever...
 
 
 
@@ -296,7 +312,8 @@ class FDTD:
         pass
 
     def update_observation_points(self):
-        for obs in self.observation_points:
+
+        for obs in self.observation_points.values():
             hz = self.Hz[*obs.coordinates['hz']]
             ex = self.Ex[*obs.coordinates['ex']]
             ey = self.Ey[*obs.coordinates['ey']]
@@ -367,8 +384,8 @@ def user_inputs():
             continue
         material = input('Please provide the type of material; PEC / PMC / Drude: ')
         if material == 'Drude':
-            e,m = input('Please provide the material properties in permittivity,permeability format: ').split(',')
-            properties = { 'e' : float(e) , 'm' : float(m)}
+            e,m, sigma, gamma  = input('Please provide the material properties in permittivity,permeability,sigma_DC,gamma format: ').split(',')
+            properties = { 'e' : float(e) , 'm' : float(m), 'sigma_DC' : float(sigma) , 'gamma' : float(gamma)}
         else:
             properties = {}
         counter += 1
@@ -385,6 +402,8 @@ def user_inputs():
 
 sim = FDTD(*user_inputs())
 
-sim.debugger(show_grid=True)
+sim.debugger(show_grid=False)
 sim.update()
 
+# for obs in sim.observation_points.values():       #this is how we can access observation points after sim runs
+#     print(obs.ex_values)
