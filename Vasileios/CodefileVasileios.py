@@ -39,6 +39,19 @@ def cross_average2Drray(arr):
     padded = np.pad(arr,1,mode='edge')
     cross_avg = (padded[1:-1,1:-1] + padded[:-2,1:-1] + padded[2:,1:-1] + padded[1:-1,:-2] + padded[1:-1,2:] ) / 5
     return cross_avg
+class ObservationPoint:
+    def __init__(self,x,y):
+        self.x = x
+        self.y = y
+        self.ex_values = []
+        self.ey_values = []
+        self.hz_values = []
+        self.coordinates = {}
+
+    def add_sample(self,ex,ey,hz):
+        self.ex_values.append(ex)
+        self.ey_values.append(ey)
+        self.hz_values.append(hz)
 
 class Scatterer:
 
@@ -82,7 +95,7 @@ class Scatterer:
             return ( (X - xc)**2 + (Y - yc)**2 ) <= r**2
 class FDTD:
 
-    def __init__(self, Lx:float , Ly:float , PW , scatterer_list:list , observation_points):
+    def __init__(self, Lx:float , Ly:float , PW , scatterer_list:list , observation_points:dict ):
 
         # constants
         self.epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
@@ -199,6 +212,17 @@ class FDTD:
         self.epsilon_yavg = (self.epsilon_grid[:-1, :] + self.epsilon_grid[1:, :]) / 2
         self.epsilon_xavg = (self.epsilon_grid[:,:-1] + self.epsilon_grid[:,1:]) / 2
         self.mu_crossavg = cross_average2Drray(self.mu_grid)
+        # observation points located in respecitive fields
+        for obs in self.observation_points.values():
+            # use the x and y edges or centers to locate physical space (x,y) points into our discrete grids
+            ix_from_edges = np.searchsorted(self.x_edges,obs.x) - 1
+            iy_from_edges = np.searchsorted(self.y_edges,obs.y) - 1
+            ix_from_c = np.searchsorted(x_centers[1:-1],obs.x)
+            iy_from_c = np.searchsorted(y_centers[1:-1], obs.y)
+            obs.coordinates['hz'] = (iy_from_edges,ix_from_edges)
+            obs.coordinates['ex'] = (iy_from_c,ix_from_edges)
+            obs.coordinates['ey'] = (iy_from_edges,ix_from_c)
+
 
     def in_refined_region(self, pos:float , axis:str):
         """
@@ -271,14 +295,20 @@ class FDTD:
     def source_pw(self, Aetc):
         pass
 
-    def observation_points(self):
-        # use the x and y edges to locate physical space (x,y) points into our discrete grid
-        pass
+    def update_observation_points(self):
+        for obs in self.observation_points:
+            hz = self.Hz[*obs.coordinates['hz']]
+            ex = self.Ex[*obs.coordinates['ex']]
+            ey = self.Ey[*obs.coordinates['ey']]
+            obs.add_sample(ex,ey,hz)
+
+
 
     def debugger(self,show_grid = False):
         fig, ax = plt.subplots(figsize=(8, 8))
         ax.contourf(self.Xc, self.Yc, self.mask_Hz, levels=[0.5, 1], colors='black', linestyles='--')
-        ax.plot(1, 5, 'rs', fillstyle="none", label='Source')
+        for obs in self.observation_points.values():
+            ax.plot(obs.x, obs.y, 'mo', fillstyle="none", label='Observation Point')
 
         # Plot non-uniform grid lines (physical Yee grid)
         if show_grid:
@@ -346,12 +376,12 @@ def user_inputs():
         shape = input('Please provide the shape of the scatterer (circle or rectangle or free or none): ')
     # 5. location(s) of observation points (x,y)
     observation_points_lstr = input('Please provide the observation points in x1,y1;...;xn,yn format: ').split(';')
-    obs_list_tuples = []
+    obs_dict_tuples = {}
     for xy in observation_points_lstr:
         a,b = xy.split(',')
-        obs_list_tuples.append((float(a),float(b)))
+        obs_dict_tuples[(float(a), float(b))] = ObservationPoint(float(a),float(b))
 
-    return Lx, Ly, l_min, scatter_list, obs_list_tuples
+    return Lx, Ly, l_min, scatter_list, obs_dict_tuples
 
 sim = FDTD(*user_inputs())
 
