@@ -177,6 +177,17 @@ class FDTD:
         self.epsilon_yavg = np.zeros_like(self.Ex)                 #epsilon spatially averaged over y, used for Ex update
         self.epsilon_xavg = np.zeros_like(self.Ey)                 #epsilon spatially averaged over x, used for Ey update
         self.mu_grid = np.full(self.Hz.shape, self.mu_0)
+
+
+        #initialize auxilary fields
+        self.Hzd = np.zeros_like(self.Hz)
+        print(f"Ny:{Ny}, Nx:{Nx}")
+        self.Exd = np.zeros((Ny-1,Nx))          
+        self.Eyd = np.zeros((Ny, Nx-1))
+        self.Exdd = np.zeros((Ny-1,Nx))
+        self.Eydd = np.zeros((Ny, Nx-1))
+
+
         # generate mask
         self.mask_Hz = np.zeros_like(self.Hz)
         self.mask_Ex = np.zeros_like(self.Ex)
@@ -250,7 +261,7 @@ class FDTD:
         
         
         # BC PEC = tangential electric field set to zero
-        
+
         # top BC
         self.Hz[0,1:-1] += self.dt / self.mu_crossavg[0,1:-1] * ( ((self.Ex[0,1:-1] - 0 ) / self.DY_Hz[0,1:-1] ) +
                                            ((self.Ey[0,:-1] - self.Ey[0,1:]) / self.DX_Hz[0,1:-1]) )
@@ -318,10 +329,34 @@ class FDTD:
         return field*H
 
 
+    def pml(self, sigmamax=0.17,Kappamax=3,thickness_denom = 10, pml_order = 4 ,scale=1):
+        """
+        pml_order: profile of pml; higher order means less reflections from inner side
+        prof_type: either polynomial or exponential
+        scale: to further reduce lattice mismatch of inner side of PML
+        """
+        # thickness needs to be small relatively to nx
+        self.pml_thickness = max(1, self.Nx // thickness_denom)
+        # damping coëfficient grid in x and y
+        self.dampx = np.zeros(self.Nx + 1)
+        self.dampy = np.zeros(self.Ny + 1)
+        self.Kappax = np.zeros(self.Nx + 1)
+        self.Kappay = np.zeros(self.Ny + 1)
+        def profile(index, thickness, sigmamax,pml_order):
+            return sigmamax * ((index / thickness) ** pml_order) 
+        # only uses the values in the pml layer so that the non pml layer doesnt get affected
+        for i in range(self.pml_thickness):
+            sigma_value = profile(i, self.pml_thickness, sigmamax, pml_order, scale)
 
+            self.dampx[i] = sigma_value
+            self.dampx[-(i + 1)] = sigma_value
+            self.dampy[i] = sigma_value
+            self.dampy[-(i + 1)] = sigma_value
+            #print(self.dampx)          #debugger, inside values higher??
+        return None
     
     
-    def pml(self, sigmamax=1,thickness_denom = 10, pml_order = 3,prof_type = 'polynomial',scale=1):
+    def pml2(self, sigmamax=1,thickness_denom = 10, pml_order = 3,prof_type = 'polynomial',scale=1):
         """
         pml_order: profile of pml; higher order means less reflections from inner side
         prof_type: either polynomial or exponential
@@ -349,8 +384,8 @@ class FDTD:
 
             return sigma
 
-        sigmax=sigmaprof(x=self.x,Lx=self.Lx)  
-        sigmay=sigmaprof(self.y,Lx=self.Ly)  
+        sigmax=sigmaprof(self.x,self.Lx)  
+        sigmay=sigmaprof(self.y,self.Ly)  
 
         # thickness needs to be small relatively to nx
         self.pml_thicknessx= max(1, self.nx // thickness_denom)
@@ -468,8 +503,8 @@ def user_inputs():
 
     return Lx, Ly, l_min, scatter_list, obs_list_tuples
 
-sim = FDTD(*user_inputs())
-
+#sim = FDTD(*user_inputs())
+sim = FDTD()
 sim.debugger(show_grid=True)
 sim.update()
 

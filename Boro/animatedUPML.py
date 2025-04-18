@@ -104,6 +104,7 @@ class FDTD:
         self.epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
         self.mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
         self.c = 1 / np.sqrt(self.mu_0 * self.epsilon_0)  # Speed of light in vacuum
+        self.Z0=(self.mu_0/self.epsilon_0)**(1/2)
         # sim area
         self.Lx = Lx
         self.Ly = Ly
@@ -189,6 +190,8 @@ class FDTD:
         _ , self.DY_Ex = np.meshgrid(x_centers ,self.dy_dual, indexing='xy')
         self.DX_Ey , _ = np.meshgrid(self.dx_dual, y_centers, indexing='xy')
         self.DX_Hz, self.DY_Hz = np.meshgrid(self.dx, self.dy, indexing='xy')
+
+
         # initialize fields
         self.Hz = np.zeros_like(self.Xc)
         self.Ny, self.Nx = self.Hz.shape
@@ -201,13 +204,34 @@ class FDTD:
         self.mu_grid = np.full(self.Hz.shape, self.mu_0)
         self.Jcx = np.zeros_like(self.Ex)
         self.Jcy = np.zeros_like(self.Ey)
+
+
+        #initialize auxilary fields
+        self.Hzd = np.zeros_like(self.Hz)
+        print(f"Ny:{self.Ny}, Nx:{self.Nx}")
+        self.Exd = np.zeros((self.Ny-1,self.Nx))          
+        self.Eyd = np.zeros((self.Ny, self.Nx-1))
+        self.Exdd = np.zeros((self.Ny-1,self.Nx))
+        self.Eydd = np.zeros((self.Ny, self.Nx-1))
+
+        #initialize also the new fields for update equations
+        self.Hzdn=self.Hzd
+        self.Exdn=self.Exd
+        self.Eydn=self.Eyd
+        self.Exddn=self.Exdd
+        self.Eyddn=self.Eydd
+
         # generate mask
         self.mask_Hz = np.zeros_like(self.Hz)
         self.mask_Ex = np.zeros_like(self.Ex)
         self.mask_Ey = np.zeros_like(self.Ey)
         _ , Y_edges = np.meshgrid(x_centers, self.y_edges[1:-1], indexing='xy') #for Ex
         X_edges, _ = np.meshgrid(self.x_edges[1:-1], y_centers, indexing='xy') #for Ey
+
+
         # print(f"Xc: {self.Xc.shape}, Y_edges{Y_edges.shape}, Yc{self.Yc.shape}, X_edges{X_edges.shape}")    #debugger
+        
+        
         for scatterer in self.scatterer_list:
             inside_z = scatterer.is_inside(self.Xc, self.Yc)            #Hz; (Ny,Nx)
             inside_x = scatterer.is_inside(self.Xc[:-1,:], Y_edges)     #Ex; (Ny-1,Nx)
@@ -314,7 +338,199 @@ class FDTD:
                                            ((self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1]) )
         self.update_observation_points()
 
-    # BC for PMC and PEC logic
+
+    def update_PML(self):
+        """"These are the upaate equations with the PML taken from  2.133-2.138"""
+        
+        
+        # creating the coefficients:
+        self.beta_xp=self.kappax_2D/(self.c*self.dt) + self.Z0*self.sigmax_2D/2
+        self.beta_xm=self.kappax_2D/(self.c*self.dt) - self.Z0*self.sigmax_2D/2
+        self.beta_yp=self.kappay_2D/(self.c*self.dt) + self.Z0*self.sigmay_2D/2
+        self.beta_ym=self.kappay_2D/(self.c*self.dt) - self.Z0*self.sigmay_2D/2
+        self.beta_zp=self.kappaz_2D/(self.c*self.dt) + self.Z0*self.sigmaz_2D/2
+        self.beta_zm=self.kappaz_2D/(self.c*self.dt) - self.Z0*self.sigmaz_2D/2
+        
+        
+        
+        self.dtau=self.dt*self.c
+
+        #updating all the fields
+        self.Hzdn[1:-1,1:-1] = (self.beta_xm[1:-1,1:-1]*self.Hzd[1:-1,1:-1]                                                    #Hz term
+                               
+                               - 1/self.DX_Hz[1:-1,1:-1]*(self.Ey[1:-1,:-1] - self.Ey[1:-1,1:])         #Ey term
+
+                               + ((self.Ex[1:,1:-1] - self.Ex[:-1,1:-1]) / self.DY_Hz[1:-1,1:-1] )      #Ex term
+
+                                )/self.beta_xp[1:-1,1:-1]
+        self.Hz[1:-1,1:-1] = (self.beta_ym[1:-1,1:-1]*self.Hz[1:-1,1:-1]                                                    #Hz term
+                               
+                               + self.beta_zp[1:-1,1:-1]*self.Hzdn[1:-1,1:-1]- self.beta_zp[1:-1,1:-1]*self.Hzd[1:-1,1:-1]  
+                               
+                               )/self.beta_yp[1:-1,1:-1]
+        
+
+        #when there is a Drude media make sure that these are accounted for as well
+
+
+        """if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
+            for scatterer in self.scatterer_list:
+                if scatterer.material == 'Drude':
+                    g = scatterer.properties['gamma']
+                    sigma = scatterer.properties['sigma_DC']
+                    gt=self.c*g
+                    alphap=2*gt/self.dtau+1
+                    alpham=2*gt/self.dtau-1
+                    deltap= 1/self.dtau+self.Z0*sigma/(2*alphap)
+                    deltam= 1/self.dtau-self.Z0*sigma/(2*alphap)
+                    deltaw= 1/2 * ( 1 + alpham/alphap)
+                    maskx = self.mask_Ex == scatterer.ID
+                    masky = self.mask_Ey == scatterer.ID
+                    Hmaskx= self.mask_Hz == scatterer.ID
+                    Hmasky= self.mask_Hz == scatterer.ID
+                    Hz_diff_x = np.zeros_like(self.Hz)
+                    Hz_diff_x[1:, :] = self.Hz[1:, :] - self.Hz[:-1, :]
+                    Hz_diff_y = np.zeros_like(self.Hz)
+                    Hz_diff_y[:,1:] = self.Hz[:, 1:] - self.Hz[:, :-1]
+                    #!NOT SURE IF THIS MASKING SHIFT IS GOOD FOR BOUNDARIES SEE
+
+                    self.Exddn[maskx]=(deltam *self.Z0 *self.Exdd[maskx]-deltaw*self.Jcx[maskx] 
+                                       
+                                       + 1/self.DY_Hz * (Hz_diff_y[Hmaskx])
+                                       )/( deltap * self.Z0)
+                    
+                    self.Eyddn[masky]=(deltam *self.z0 *self.Eydd[masky]-deltaw*self.Jcy[masky]         
+                                        - 1/self.DX_Hz * (Hz_diff_x[Hmasky])
+                                       )/( deltap * self.Z0)
+                    
+                    self.Jcx[maskx] = ( alpham * self.Jcx[maskx]
+                                       
+                                       + self.Z0*sigma * (self.Z0* (self.Exddn[maskx]+self.Exdd[maskx]))
+
+
+                                        )/alphap
+
+
+
+                    self.Jcy[masky] = ( alpham * self.Jcy[masky]
+                                       
+                                       + self.Z0*sigma * (self.Z0* (self.Eyddn[masky]+self.Eydd[masky]))
+                                       
+
+                                        )/alphap"""
+        self.Exdn=(self.beta_ym[1:,:] * self.Exd 
+                   + 1/self.dtau*(self.Exddn-self.Exdd)
+
+                    ) / self.beta_yp[1:,:]
+        self.Eydn=(self.beta_zm[:,:1] * self.Eyd 
+                   + 1/self.dtau*(self.Eyddn-self.Eydd)
+
+                    ) / self.beta_zp[:,:1]
+        
+        self.Ex=(self.beta_zm[1:,:] * self.Ex 
+                   + self.beta_xp[1:,:] *(self.Exdn-self.Exd)
+
+                    ) / self.beta_zp[1:,:]
+        self.Ey=(self.beta_xm[:,1:] * self.Ey 
+                   + self.beta_yp[:,1:]*(self.Eydn-self.Eyd)
+
+                    ) / self.beta_xp[:,1:]
+        
+        #Boundary conditions
+        # BC PEC = tangential electric field set to zero
+        # top BC
+        self.Hz[0,1:-1] += self.dt / self.mu_crossavg[0,1:-1] * ( ((self.Ex[0,1:-1] - 0 ) / self.DY_Hz[0,1:-1] ) +
+                                           ((self.Ey[0,:-1] - self.Ey[0,1:]) / self.DX_Hz[0,1:-1]) )
+        # bot BC
+        self.Hz[-1,1:-1] += self.dt / self.mu_crossavg[-1,1:-1] * ( ((0 - self.Ex[-1,1:-1]) / self.DY_Hz[-1,1:-1] ) +
+                                           ((self.Ey[-1,:-1] - self.Ey[-1,1:]) / self.DX_Hz[-1,1:-1]) )
+        # left BC
+        self.Hz[1:-1,0] += self.dt / self.mu_crossavg[1:-1,0] * ( ((self.Ex[1:,0] - self.Ex[:-1,0]) / self.DY_Hz[1:-1,0] ) +
+                                           (( 0 - self.Ey[1:-1,0]) / self.DX_Hz[1:-1,0]) )
+        # right BC
+        self.Hz[1:-1,-1] += self.dt / self.mu_crossavg[1:-1,-1] * ( ((self.Ex[1:,-1] - self.Ex[:-1,-1]) / self.DY_Hz[1:-1,-1] ) +
+                                           ((self.Ey[1:-1,-1] - 0 ) / self.DX_Hz[1:-1,-1]) )
+        # corners tl, tr, bl, br
+        self.Hz[0,0] += self.dt / self.mu_crossavg[0,0] * ( ((self.Ex[0,0] - 0) / self.DY_Hz[0,0] ) +
+                                           ( 0 - self.Ey[0,0]) / self.DX_Hz[0,0] )
+        self.Hz[0,-1] += self.dt / self.mu_crossavg[0,-1] * ( ((self.Ex[0,-1] - 0) / self.DY_Hz[0,-1] ) +
+                                           (( self.Ey[0,-1] - 0) / self.DX_Hz[0,-1]) )
+        self.Hz[-1,0] += self.dt / self.mu_crossavg[-1,0] * ( (( 0 - self.Ex[-1,0]) / self.DY_Hz[-1,0] ) +
+                                           (( 0 - self.Ey[-1,0]) / self.DX_Hz[-1,0]) )
+        self.Hz[-1,-1] += self.dt / self.mu_crossavg[-1,-1] * ( (( 0 - self.Ex[-1,-1]) / self.DY_Hz[-1,-1] ) +
+                                           ((self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1]) )
+        self.update_observation_points()
+        
+        
+        
+        
+        #for next update make sure that we shift one timestepfurther
+
+        self.Hzd=self.Hzdn
+        self.Exdd=self.Exddn
+        self.Eydd=self.Eyddn
+        self.Eyd=self.Eydn
+        self.Exd=self.Exdn
+
+
+        return None
+    
+    def pml(self, kappamax=3,thickness_denom = 10, pml_order = 4 ,scale=1):
+        """
+        pml_order: profile of pml; higher order means less reflections from inner side
+        prof_type: either polynomial or exponential
+        scale: to further reduce lattice mismatch of inner side of PML
+        """
+        sigmamax= (pml_order+1)/(150*np.pi)
+        # thickness needs to be small relatively to nx
+        self.pml_thickness = max(1, self.Nx // thickness_denom)
+        # damping coëfficient grid in x and y and kappax and kappy
+        self.sigmax = np.zeros(self.Nx )
+        self.sigmay = np.zeros(self.Ny )
+        self.kappax = np.zeros(self.Nx )
+        self.kappay = np.zeros(self.Ny )
+
+        #### NOT SO SURE ABOUT THE PLUS ONE HERE MIGHT ADJUST
+
+        def sigmaprofile(index, thickness, sigmamax,pml_order):
+            return sigmamax * ((index / thickness) ** pml_order) 
+        def kappaprofile(index, thickness, sigmamax,pml_order):
+            return 1+ (kappamax -1)* ((index / thickness) ** pml_order) 
+        # only uses the values in the pml layer so that the non pml layer doesnt get affected
+        for i in range(self.pml_thickness):
+            sigma_val = sigmaprofile(i, self.pml_thickness, sigmamax, pml_order)
+            kappa_val = kappaprofile(i, self.pml_thickness, sigmamax, pml_order)
+
+            self.sigmax[i] = sigma_val/self.dx[i]
+            self.sigmax[-(i + 1)] = sigma_val/self.dx[-(i+1)]
+            self.sigmay[i] = sigma_val/self.dy[i]
+            self.sigmay[-(i + 1)] = sigma_val/self.dy[-(i+1)]
+
+
+            self.kappax[i] = kappa_val / self.dx[i]
+            self.kappax[-(i + 1)] = kappa_val / self.dx[-(i + 1)]
+            self.kappay[i] = kappa_val / self.dy[i]
+            self.kappay[-(i + 1)] = kappa_val / self.dy[-(i + 1)]
+            #print(self.dampx)          #debugger, inside values higher??
+
+        #extend over the full axis
+
+        self.sigmax_2D = np.tile(self.sigmax[:, np.newaxis], (1, self.Ny ))
+        self.sigmay_2D = np.tile(self.sigmay[np.newaxis, :], (self.Nx , 1))
+
+        self.kappax_2D = np.tile(self.kappax[:, np.newaxis], (1, self.Ny ))
+        self.kappay_2D = np.tile(self.kappay[np.newaxis, :], (self.Nx , 1))
+        
+        
+        
+        # Final 2D UPML fields using additive damping
+        self.sigmaz_2D = self.sigmax_2D + self.sigmay_2D
+        self.kappaz_2D = self.kappax_2D * self.kappay_2D
+
+        
+        print(self.sigmax_2D)   #Debugging
+        return None
+    
 
     def source_pw(self, Aetc):
         pass
@@ -364,7 +580,9 @@ class FDTD:
         # timeseries = np.zeros((nt,))   # DELETE??
 
         fig, ax = plt.subplots()
+        ax.invert_yaxis()
         plt.axis('equal')
+
         # plt.xlim([1, self.nx + 1])            #to avoid panning check if Nx or x
         # plt.ylim([1, self.ny + 1])
         movie = []
@@ -377,15 +595,21 @@ class FDTD:
             source = self.A * np.exp(-(t - self.tc)**2 / (2 * self.s_pulse**2))
 
             self.Hz[y_source, x_source] += source  # Adding source term to propagation
-            self.update()  # Propagate over one time step
+            self.update_PML()  # Propagate over one time step
 
 
             # Presenting the Hz field
+            # artists = [
+            #     ax.text(0.5, 1.05, '%d/%d' % (it, nt),
+            #             size=plt.rcParams["axes.titlesize"],
+            #             ha="center", transform=ax.transAxes),
+            #     ax.imshow(self.Hz, vmin=-0.02 * self.A, vmax=0.02 * self.A, origin='upper',extent=(0,self.Lx,0,self.Ly))
+            # ]
             artists = [
                 ax.text(0.5, 1.05, '%d/%d' % (it, nt),
                         size=plt.rcParams["axes.titlesize"],
                         ha="center", transform=ax.transAxes),
-                ax.imshow(self.Hz, vmin=-0.02 * self.A, vmax=0.02 * self.A, origin='upper')
+                ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-0.02*self.A,vmax=0.02*self.A)
             ]
             for obs in sim.observation_points.values():
                 artists.append(ax.plot(obs.x, obs.y, 'ko', fillstyle="none")[0],)
@@ -394,24 +618,6 @@ class FDTD:
         my_anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000,
                                   blit=True)
         plt.show()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def user_inputs():
@@ -467,16 +673,92 @@ def user_inputs():
 
     return Lx, Ly, PW, scatter_list, obs_dict_tuples
 
-sim = FDTD(*user_inputs())
+def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma, gamma, observation_points_lstr):
+    # 1. size of sim area
+    # Lx, Ly = map(float,input('Please provide the lengths Lx [cm] and Ly [cm] in Lx,Ly format: ').split(','))
+    # 2. PW parameters
+    # A, s_pulse = map(float,input('Please provide the amplitude A of the source and the pulse width sigma in A,sigma format').split(','))
+    epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
+    mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
+    c = 1 / np.sqrt(mu_0 * epsilon_0)
+    l_min = 2 * np.pi * c * s_pulse / 3 # could also try / 5; w_max = 5 / s_pulse
+    dx_min = l_min / 20
+    CFL = 1
+    dt = CFL / ( c * np.sqrt((1 / dx_min ** 2) + (1 / dx_min ** 2)))   # time step from spatial disc. & CFL
+    tc = 5 * s_pulse                                                   # suggested tc >= 5 * sigma
+    # steps = input(f'For the given pulse width, timestep = {dt} and central time tc = {tc} are recommended; If '
+    #       f'the user prefers manual input enter them in dt,tc format otherwise just enter.')
+    # if bool(steps):
+    #     dt,tc = map(float,steps.split(','))
+    PW = { 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc}
+    # 3. scatterers
+    # shape = input('Please provide the shape of the scatterer (circle or rectangle or free or none): ')     #defien free later
+    counter = 0
+    scatter_list = []
+    while shape != 'none':
+        if shape == 'circle':
+            # xc,yc,r = input('Please provide the center coordinates and the radius in xc,xy,radius format: ').split(',')
+            geometry = {'center': (float(xc), float(yc)), 'radius': float(r)}
+        elif shape == 'rectangle':
+            xi,xf,yi,yf = input('Please provide the coordinate ranges of the scatterer in '
+                                'xmin,xmax,ymin,ymax format: ').split(',')
+            geometry = { 'xi':float(xi), 'xf':float(xf), 'yi':float(yi), 'yf':float(yf) }
+        else:
+            # error handling
+            shape = input('Please provide the shape of the scatterer (circle or rectangle or free or none); typo: ')
+            continue
+        # material = input('Please provide the type of material; PEC / PMC / Drude: ')
+        if material == 'Drude':
+            # e_r,m_r, sigma, gamma  = input('Please provide the material properties in relative permittivity,relative permeability,sigma_DC,gamma format: ').split(',')
+            properties = { 'e_r' : float(e_r) , 'm_r' : float(m_r), 'sigma_DC' : float(sigma) , 'gamma' : float(gamma)}
+        else:
+            properties = {}
+        counter += 1
+        scatter_list.append(Scatterer(shape, material ,counter, geometry , properties))
+        # shape = input('Please provide the shape of the scatterer (circle or rectangle or free or none): ')
+        shape = 'none'
+    # 4. location(s) of observation points (x,y)
+    # observation_points_lstr = input('Please provide the observation points in x1,y1;...;xn,yn format: ').split(';')
+    obs_dict_tuples = {}
+    for xy in observation_points_lstr:
+        a,b = xy.split(',')
+        obs_dict_tuples[(float(a), float(b))] = ObservationPoint(float(a),float(b))
 
-sim.debugger(show_grid=False)
+    return Lx, Ly, PW, scatter_list, obs_dict_tuples
+
+
+# sim = FDTD(*user_inputs())
+
+sim = FDTD(*testing(20.0,20.0,1,0.0000000016,'circle',10,10,1,'Drude',
+                    10,1,10000000,10000000000000,['1.1,2','7,7']))
+
+print(sim.there_is_Drude)
+print((sim.Jcx==0).all())
+# sim.debugger(show_grid=False)
 # sim.update()
 nt = (sim.Lx / 2) / (sim.dt * sim.c)
 y_source = sim.Ny // 2
 x_source = sim.Nx // 3
-sim.iterate(int(nt),y_source,x_source)
+sim.pml(3,10,4,1)
+sim.iterate(int(nt+100),y_source,x_source)
+sim1 = FDTD(*testing(20.0,20.0,1,0.0000000016,'circle',10,10,1,'Drude',
+                    10,1,10000000,10000000000000,['1.1,2','7,7']))
+
+#print(sim1.there_is_Drude)
+#print((sim1.Jcx==0).all())
+# sim.debugger(show_grid=False)
+# sim.update()
+#nt = (sim1.Lx / 2) / (sim1.dt * sim1.c)
+y_source = sim1.Ny // 2
+x_source = sim1.Nx // 3
+#sim1.iterate(int(nt+100),y_source,x_source)
+
+
+
+
 
 
 
 # for obs in sim.observation_points.values():       #this is how we can access observation points after sim runs
 #     print(obs.ex_values)
+
