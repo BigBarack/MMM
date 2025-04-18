@@ -277,8 +277,10 @@ class FDTD:
         self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey
 
         if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
+            # print('entered in there_is in update')          # debugger
             for scatterer in self.scatterer_list:
                 if scatterer.material == 'Drude':
+                    # print('found the Drude')                   # debugger
                     g = scatterer.properties['gamma']
                     sigma = scatterer.properties['sigma_DC']
                     maskx = self.mask_Ex == scatterer.ID
@@ -359,7 +361,7 @@ class FDTD:
         # plt.grid(visible=True,)
         plt.show()
 
-    def iterate(self,nt,y_source, x_source):
+    def iterate(self,nt,y_source, x_source, visu=True):
 
         # timeseries = np.zeros((nt,))   # DELETE??
 
@@ -381,27 +383,28 @@ class FDTD:
             self.Hz[y_source, x_source] += source  # Adding source term to propagation
             self.update()  # Propagate over one time step
 
-
-            # Presenting the Hz field
-            # artists = [
-            #     ax.text(0.5, 1.05, '%d/%d' % (it, nt),
-            #             size=plt.rcParams["axes.titlesize"],
-            #             ha="center", transform=ax.transAxes),
-            #     ax.imshow(self.Hz, vmin=-0.02 * self.A, vmax=0.02 * self.A, origin='upper',extent=(0,self.Lx,0,self.Ly))
-            # ]
-            artists = [
-                ax.text(0.5, 1.05, '%d/%d' % (it, nt),
-                        size=plt.rcParams["axes.titlesize"],
-                        ha="center", transform=ax.transAxes),
-                ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-0.02*self.A,vmax=0.02*self.A)
-            ]
-            for obs in sim.observation_points.values():
-                artists.append(ax.plot(obs.x, obs.y, 'ko', fillstyle="none")[0],)
-            movie.append(artists)
+            if visu:
+                # Presenting the Hz field
+                # artists = [
+                #     ax.text(0.5, 1.05, '%d/%d' % (it, nt),
+                #             size=plt.rcParams["axes.titlesize"],
+                #             ha="center", transform=ax.transAxes),
+                #     ax.imshow(self.Hz, vmin=-0.02 * self.A, vmax=0.02 * self.A, origin='upper',extent=(0,self.Lx,0,self.Ly))
+                # ]
+                artists = [
+                    ax.text(0.5, 1.05, '%d/%d' % (it, nt),
+                            size=plt.rcParams["axes.titlesize"],
+                            ha="center", transform=ax.transAxes),
+                    ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-0.02*self.A,vmax=0.02*self.A)
+                ]
+                for obs in sim.observation_points.values():
+                    artists.append(ax.plot(obs.x, obs.y, 'ko', fillstyle="none")[0],)
+                movie.append(artists)
         print('iterations done')
-        my_anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000,
-                                  blit=True)
-        plt.show()
+        if visu:
+            my_anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000,
+                                      blit=True)
+            plt.show()
 
 
 def user_inputs():
@@ -514,18 +517,18 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma,
 # sim = FDTD(*user_inputs())
 
 sim = FDTD(*testing(20.0,20.0,1,0.0000000016,'circle',10,10,1,'Drude',
-                    1,1,10000000,10000000000000,['1.1,2','7,7']))
+                    10,10,10000000,10000000000000,['1.1,2','7,7']))
 print(sim.there_is_Drude)
 print((sim.Jcx==0).all())
 # sim.debugger(show_grid=False)
 # sim.update()
 nt = (sim.Lx / 2) / (sim.dt * sim.c)
+# nt = 50
 y_source = sim.Ny // 2
 x_source = sim.Nx // 3
-sim.iterate(int(nt),y_source,x_source)
+sim.iterate(int(nt),y_source,x_source, visu = True)
 
 
 
 # for obs in sim.observation_points.values():       #this is how we can access observation points after sim runs
 #     print(obs.ex_values)
-
