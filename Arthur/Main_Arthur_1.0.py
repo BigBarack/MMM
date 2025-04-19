@@ -119,17 +119,17 @@ class FDTD:
         self.dx_coarse = self.lmin / 10
         self.dx_inter1 = self.dx_coarse / ( 2 ** (1/3) )
         self.dx_inter2 = self.dx_inter1 / ( 2 ** (1/3) )
-        self.dx_fine = self.lmin / 20
+        self.dx_fine = self.dx_inter2 / ( 2 ** (1/3) )
         self.scatterer_list = scatterer_list
         self.observation_points = observation_points
         self.there_is_Drude = any([ scat.material == 'Drude' for scat in scatterer_list])
         self.there_is_PMC = any([scat.material == 'PMC' for scat in scatterer_list])
 
         # PML
-        self.PML_n = 20
-        self.PML_m = 5
+        self.PML_n = 15
+        self.PML_m = 4
         self.PML_KappaMax = 1.0
-        self.PML_SigmaMax = (self.PML_m+1)/(150*np.pi*self.dx_coarse)
+        self.PML_SigmaMax = (self.PML_m+1)/(150*np.pi)
         def kappa(self,i):
             return 1+(self.PML_KappaMax-1)/((i/self.PML_n)**self.PML_m)
         def sigma_e(self,i):
@@ -140,14 +140,15 @@ class FDTD:
             mask = np.zeros_like(array)
             if axis == 0:
                 for i in range(self.PML_n):
-                    mask[self.PML_n-i,:],mask[-(self.PML_n-i),:]=sigma_e(self,i),sigma_e(self,i)
+                    mask[self.PML_n-i,:],mask[-(self.PML_n-i),:]=sigma_e(self,i)*self.dx/(self.dx_coarse**2),sigma_e(self,i)*self.dx/(self.dx_coarse**2)
+                    print(self.dx)
             elif axis == 1:
                 for i in range(self.PML_n):
-                    mask[:,self.PML_n-i],mask[:,-(self.PML_n-i)]=sigma_e(self,i),sigma_e(self,i)
+                    mask[:,self.PML_n-i],mask[:,-(self.PML_n-i)]=sigma_e(self,i)*self.dy/(self.dx_coarse**2),sigma_e(self,i)*self.dy/(self.dx_coarse**2)
             elif axis == 2:
                 for i in range(self.PML_n):
-                    mask[self.PML_n-i,:],mask[-(self.PML_n-i),:]=sigma_h(self,i),sigma_h(self,i)
-                    mask[:,self.PML_n-i],mask[:,-(self.PML_n-i)]=sigma_h(self,i),sigma_h(self,i)
+                    mask[self.PML_n-i,:],mask[-(self.PML_n-i),:]=sigma_h(self,i)*self.dx/(self.dx_coarse**2),sigma_h(self,i)*self.dx/(self.dx_coarse**2)
+                    mask[:,self.PML_n-i],mask[:,-(self.PML_n-i)]=sigma_h(self,i)*self.dy/(self.dx_coarse**2),sigma_h(self,i)*self.dy/(self.dx_coarse**2)
             return mask
 
 
@@ -336,9 +337,9 @@ class FDTD:
 
         # Ex & Ey updates
         # self.Ex += self.dt / self.epsilon_0 * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex     # no spatial averaging
-        self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex - self.dt/self.dx_coarse * np.multiply(self.PML_ExMask,self.Ex)
+        self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex - (self.dt/self.epsilon_0) * np.multiply(self.PML_ExMask,self.Ex)
         # self.Ey += self.dt / self.epsilon_0 * (self.Hz[:,:-1] - self.Hz[:,1:]) / self.DX_Ey
-        self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey - self.dt/self.dx_coarse * np.multiply(self.PML_EyMask,self.Ey)
+        self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey - (self.dt/self.epsilon_0) * np.multiply(self.PML_EyMask,self.Ey)
 
         if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
             for scatterer in self.scatterer_list:
@@ -360,30 +361,30 @@ class FDTD:
 
         # Hz updates
         self.Hz[1:-1,1:-1] += self.dt / self.mu_grid[1:-1,1:-1] * ( ((self.Ex[1:,1:-1] - self.Ex[:-1,1:-1]) / self.DY_Hz[1:-1,1:-1] ) +
-                                           (self.Ey[1:-1,:-1] - self.Ey[1:-1,1:]) / self.DX_Hz[1:-1,1:-1] ) - self.dt/self.mu_0 * np.multiply(self.PML_HzMask[1:-1,1:-1],self.Hz[1:-1,1:-1])
+                                           (self.Ey[1:-1,:-1] - self.Ey[1:-1,1:]) / self.DX_Hz[1:-1,1:-1] ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,1:-1],self.Hz[1:-1,1:-1])
 
         # BC bounding box; PEC = tangential electric field set to zero
         # top BC
         self.Hz[0,1:-1] += self.dt / self.mu_crossavg[0,1:-1] * ( ((self.Ex[0,1:-1] - 0 ) / self.DY_Hz[0,1:-1] ) +
-                                           ((self.Ey[0,:-1] - self.Ey[0,1:]) / self.DX_Hz[0,1:-1]) ) - self.dt/self.mu_0 * np.multiply(self.PML_HzMask[0,1:-1],self.Hz[0,1:-1])
+                                           ((self.Ey[0,:-1] - self.Ey[0,1:]) / self.DX_Hz[0,1:-1]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,1:-1],self.Hz[0,1:-1])
         # bot BC
         self.Hz[-1,1:-1] += self.dt / self.mu_crossavg[-1,1:-1] * ( ((0 - self.Ex[-1,1:-1]) / self.DY_Hz[-1,1:-1] ) +
-                                           ((self.Ey[-1,:-1] - self.Ey[-1,1:]) / self.DX_Hz[-1,1:-1]) ) - self.dt/self.mu_0 * np.multiply(self.PML_HzMask[-1,1:-1],self.Hz[-1,1:-1])
+                                           ((self.Ey[-1,:-1] - self.Ey[-1,1:]) / self.DX_Hz[-1,1:-1]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,1:-1],self.Hz[-1,1:-1])
         # left BC
         self.Hz[1:-1,0] += self.dt / self.mu_crossavg[1:-1,0] * ( ((self.Ex[1:,0] - self.Ex[:-1,0]) / self.DY_Hz[1:-1,0] ) +
-                                           (( 0 - self.Ey[1:-1,0]) / self.DX_Hz[1:-1,0]) ) - self.dt/self.mu_0 * np.multiply(self.PML_HzMask[1:-1,0],self.Hz[1:-1,0])
+                                           (( 0 - self.Ey[1:-1,0]) / self.DX_Hz[1:-1,0]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,0],self.Hz[1:-1,0])
         # right BC
         self.Hz[1:-1,-1] += self.dt / self.mu_crossavg[1:-1,-1] * ( ((self.Ex[1:,-1] - self.Ex[:-1,-1]) / self.DY_Hz[1:-1,-1] ) +
-                                           ((self.Ey[1:-1,-1] - 0 ) / self.DX_Hz[1:-1,-1]) ) - self.dt/self.mu_0 * np.multiply(self.PML_HzMask[1:-1,-1],self.Hz[1:-1,-1])
+                                           ((self.Ey[1:-1,-1] - 0 ) / self.DX_Hz[1:-1,-1]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,-1],self.Hz[1:-1,-1])
         # corners topleft, topright, botleft, botright
         self.Hz[0,0] += self.dt / self.mu_crossavg[0,0] * ( ((self.Ex[0,0] - 0) / self.DY_Hz[0,0] ) +
-                                           ( 0 - self.Ey[0,0]) / self.DX_Hz[0,0] ) - self.dt/self.mu_0 * np.multiply(self.PML_HzMask[0,0],self.Hz[0,0])
+                                           ( 0 - self.Ey[0,0]) / self.DX_Hz[0,0] ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,0],self.Hz[0,0])
         self.Hz[0,-1] += self.dt / self.mu_crossavg[0,-1] * ( ((self.Ex[0,-1] - 0) / self.DY_Hz[0,-1] ) +
-                                           (( self.Ey[0,-1] - 0) / self.DX_Hz[0,-1]) ) - self.dt/self.mu_0 * np.multiply(self.PML_HzMask[0,-1],self.Hz[0,-1])
+                                           (( self.Ey[0,-1] - 0) / self.DX_Hz[0,-1]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,-1],self.Hz[0,-1])
         self.Hz[-1,0] += self.dt / self.mu_crossavg[-1,0] * ( (( 0 - self.Ex[-1,0]) / self.DY_Hz[-1,0] ) +
-                                           (( 0 - self.Ey[-1,0]) / self.DX_Hz[-1,0]) ) - self.dt/self.mu_0 * np.multiply(self.PML_HzMask[-1,0],self.Hz[-1,0])
+                                           (( 0 - self.Ey[-1,0]) / self.DX_Hz[-1,0]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,0],self.Hz[-1,0])
         self.Hz[-1,-1] += self.dt / self.mu_crossavg[-1,-1] * ( (( 0 - self.Ex[-1,-1]) / self.DY_Hz[-1,-1] ) +
-                                           ((self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1]) ) - self.dt/self.mu_0 * np.multiply(self.PML_HzMask[-1,-1],self.Hz[-1,-1])
+                                           ((self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,-1],self.Hz[-1,-1])
 
         #for TFSF, we just += 'known' terms on the interface and right outside
         self.Hz[self.TFSFhleft == 1] += self.dt / (self.mu_0 * self.DX_Hz[self.TFSFhleft == 1]) * self.E_inc[1]
@@ -619,7 +620,7 @@ sim = FDTD(*testing(20.0,20.0,1,0.0000000016,'circle',10,10,3,'Drude',
 
 # sim.debugger(show_grid=False)
 # nt = (sim.Lx / 1) / (sim.dt * sim.c)
-nt = 350
+nt = 1000
 
 sim.iterate(int(nt), visu = True, saving=False)
 
