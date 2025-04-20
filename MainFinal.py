@@ -10,6 +10,15 @@ from scipy.special import jv
 from scipy import ndimage
 
 
+def clear():
+
+    # for windows
+    if name == 'nt':
+        _ = system('cls')
+
+    # for mac and linux(here, os.name is 'posix')
+    else:
+        _ = system('clear')
 
 def cross_average2Drray(arr):
     """
@@ -557,7 +566,9 @@ class FDTD:
 
         for it in range(0,nt):
             t = (it - 1) * self.dt
-            print('%d/%d' % (it, nt))  # Loading bar while sim is running
+            clear()
+            perc = int(it*100//nt)
+            print('==========(%d%%)==========' % perc)  # Loading bar while sim is running
 
             # hard point source used before PW was implemented
 
@@ -593,7 +604,8 @@ class FDTD:
                 if self.there_is_PEC:
                     artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskPECy,cmap=binary_alpha,vmin=0,vmax=1))
                 movie.append(artists)
-        print('iterations done')
+        clear()
+        print('Iterations done')
         if visu:
             my_anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000,
                                       blit=True)
@@ -601,16 +613,6 @@ class FDTD:
                 my_anim.save(filename='mur1_1d.gif', writer='pillow')
             plt.show()
 
-
-def clear():
-
-    # for windows
-    if name == 'nt':
-        _ = system('cls')
-
-    # for mac and linux(here, os.name is 'posix')
-    else:
-        _ = system('clear')
 
 def UI_Size():
     #1. size of sim area
@@ -639,6 +641,7 @@ def UI_PW():
     CFL = 1
     dt = CFL / ( c * np.sqrt((1 / dx_min ** 2) + (1 / dx_min ** 2)))   # time step from spatial disc. & CFL
     tc = 6 * s_pulse                                                   # suggested tc >= 5 * sigma
+    nt = 700
     while 1:
         try:
             print(f'\nFor the given pulse width, timestep = {dt} and central time tc = {tc} are recommended; If '
@@ -656,8 +659,14 @@ def UI_PW():
             break
         except AssertionError:
             print("Please insert a valid direction!\n")
+    while 1:
+        try:
+            nt = int(input("\nPlease insert how many timesteps are needed:\n"))
+            break
+        except ValueError:
+            print("Please insert a valid amount!\n")
     PW = { 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction}
-    return(PW)
+    return(PW,nt)
     
 def UI_scatterers():
     # 3. scatterers
@@ -761,7 +770,7 @@ def user_inputs():
         if choice == '1':
             Lx,Ly = UI_Size()
         elif choice == '2':
-            PW = UI_PW()
+            PW, nt = UI_PW()
         elif choice == '3':
             scatter_list = UI_scatterers()
         elif choice == '4':
@@ -769,7 +778,7 @@ def user_inputs():
         elif choice == '0':
             break
 
-    return Lx, Ly, PW, scatter_list, obs_dict_tuples
+    return Lx, Ly, PW, scatter_list, obs_dict_tuples, nt
 
 def Run():
     choice = 0
@@ -785,8 +794,8 @@ def Run():
         except AssertionError:
             print("Please make a valid choice!\n")
     if choice == '1':
-        Lx, Ly, PW, scatterers, obs = user_inputs()
-        return Lx, Ly, PW, scatterers, obs
+        Lx, Ly, PW, scatterers, obs, nt = user_inputs()
+        return Lx, Ly, PW, scatterers, obs, nt
     elif choice == '2':
         while 1:
             try:
@@ -867,7 +876,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma,
         a,b = xy.split(',')
         obs_dict_tuples[(float(a)*0.01, float(b)*0.01)] = ObservationPoint(float(a)*0.01,float(b)*0.01)
 
-    return Lx, Ly, PW, scatter_list, obs_dict_tuples
+    return Lx, Ly, PW, scatter_list, obs_dict_tuples, 700
 
 # to test the Drude implementation, copied numbers from graphene example of syllabus
 #  lamda ~ 5 micrometer -> ~ Thz freq
@@ -970,6 +979,6 @@ def analytical_solution():
 #For testing purposes
 #sim = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
 #                    10,10,10000000,10000000000000,['8.9,10','11.1,10']))
-sim = FDTD(*Run())
-nt = 700
+Lx, Ly, PW, scatter_list, obs_dict_tuples, nt = Run()
+sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
 sim.iterate(int(nt), visu = True, just1D=False, saving=False)
