@@ -1,24 +1,3 @@
-"""
-TODO - MMM.p1
-
-- polish:
-	= comments & style & inputs & error checking for inputs
-- PEC/PMC scatterers:
-	= write out the boundary conditions for those scatterers, relatively the simplest
-- change scale:
-	= change from cm to mm or smaller, correct c and other dependent parts
-- free-shape scatterers:
-	= how..
-- offer materials for scatterers (examples of graphene etc)
-
-- maybe add Mur's ABC in 1d ADE of TFSF
-
-- add other PW directions
-
-- PML :(
-
-- validation using analytical & FFT
-"""
 import numpy as np
 from os import system, name
 import matplotlib.pyplot as plt
@@ -61,7 +40,6 @@ class ObservationPoint:
 
 
 class Scatterer:
-
     def __init__(self , shape:str , material:str , ID:int , geometry:dict , properties:dict ):
         self.shape = shape
         self.ID = ID                    #useful for up-eq and mask
@@ -102,7 +80,6 @@ class Scatterer:
 
 
 class FDTD:
-
     def __init__(self, Lx:float , Ly:float , PW:dict , scatterer_list:list , observation_points:dict ):
 
         # constants
@@ -139,7 +116,7 @@ class FDTD:
         self.PML_KappaMax = 1.0
         self.PML_SigmaMax = (self.PML_m + 1) / (150 * np.pi)
 
-
+        # Generate coefficients for the PML
         def sigma_e(self, i):
             return self.PML_SigmaMax * (i / self.PML_n) ** self.PML_m
 
@@ -195,6 +172,7 @@ class FDTD:
         self.dx = np.abs(np.diff(x))  # dx[i] = x[i+1] - x[i]
         self.dx_dual = 0.5 * (self.dx[:-1] + self.dx[1:])
 
+        # refine grid
         y = [0.0]
         y0 = 0.0  # running cursor
         entering = True
@@ -233,7 +211,6 @@ class FDTD:
         # initialize fields
         self.Hz = np.zeros_like(self.Xc)
         self.Ny, self.Nx = self.Hz.shape
-        print(f"Ny:{self.Ny}, Nx:{self.Nx}")                                      # debugger
         self.Ex = np.zeros((self.Ny-1,self.Nx))
         self.Ey = np.zeros((self.Ny, self.Nx-1))
         self.epsilon_grid = np.full(self.Hz.shape,self.epsilon_0)
@@ -481,7 +458,6 @@ class FDTD:
 
     def source_pw(self, time):
         """
-        can generalize with a logic to figure out diagonal gridding later
         call before each update to calculate the incident components needed for TFST
         :param time:  time to update source cell
         :return:
@@ -569,8 +545,6 @@ class FDTD:
 
     def iterate(self,nt, visu=True,saving = False, just1D = False):
 
-        # timeseries = np.zeros((nt,))   # may be used in the future if PW implementation changes
-
         fig, ax = plt.subplots()
 
         ax.invert_yaxis()
@@ -583,7 +557,6 @@ class FDTD:
 
         for it in range(0,nt):
             t = (it - 1) * self.dt
-            # timeseries[it,] = t        # DELETE?
             print('%d/%d' % (it, nt))  # Loading bar while sim is running
 
             # hard point source used before PW was implemented
