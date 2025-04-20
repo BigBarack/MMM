@@ -899,7 +899,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma,
 def frequency_analysis(sim_object):
     fig, axis = plt.subplots(2, 1, figsize=(10, 8))
 
-    for obs in sim.observation_points.values():
+    for obs in sim_object.observation_points.values():
         # Plot the original Hz values
         axis[0].plot(range(len(obs.hz_values)), obs.hz_values, label=f"Obs ({obs.x}, {obs.y})")
 
@@ -918,7 +918,6 @@ def frequency_analysis(sim_object):
 
     # Add labels and legend for the FFT
     axis[1].set_title("FFT of Hz Values at Observation Points")
-    axis[1].set_xlim(0, 1e9)
     axis[1].xaxis.set_major_locator(MaxNLocator(nbins=20))  # Example: 20 ticks
     axis[1].set_xlabel("Frequency (Hz)")
     axis[1].set_ylabel("Magnitude")
@@ -927,60 +926,148 @@ def frequency_analysis(sim_object):
     plt.tight_layout()
     plt.show()
 
-def analytical_solution():
-    # Parameters
-    a = 1.0  # Radius of cylinder
-    phi = np.pi / 4  # Angle
-    rho = 2.0  # Observation point
-    A = 1  # Amplitude
+def analytical_solution(sim_ob):
+    """"
+    this is the total field solution for a plane wave incident on a circular scatterer in free space.
+    """
+    
+    for obs in sim_ob.observation_points.values():
+        #parameters
 
-    # Frequency range (wavevector k)
-    k_values = np.linspace(0.1, 10, 500)  # Avoid k=0 to prevent division by zero
-    Hz_scat_values = []
+        rho = np.sqrt(obs.x**2 + obs.y**2)   # Distance from the origin to the observation point
+        phi = np.arctan2(obs.y, obs.x)  # Angle in polar coordinates
+        
+        # Wavevector (k) based on the wavelength
 
-    # Function to compute nu(n)
-    def nu(n):
-        if n == 0:
-            return 1
-        return 2
+        k_values = np.linspace(0.1, 2*sim_ob.k, 500)  # Avoid k=0 to prevent division by zero
+        a = None
+        for scatterer in sim_ob.scatterer_list:
+            if scatterer.shape == 'circle':  # Check if the scatterer is a circle
+                a = scatterer.geometry['radius']  # Extract the radius
+                break
 
-    # Compute Hz_scat for each k
-    for k in k_values:
-        ka = k * a
-        N_max = int(np.ceil(ka + 10))  # Number of summations
-        Hz_scat = 0.0
+        if a is None:
+            raise ValueError("No circular scatterer found in the simulation.")
 
-        for n in range(0, 2 * N_max + 1):
-            an = (-1j) ** nu(n)
-            term = A * (
+
+        A= 1
+        # Parameters
+
+
+        #k_values = np.linspace(0.1, 10, 500)  # Avoid k=0 to prevent division by zero
+        Hz_scat_values = []
+        
+        # Function to compute nu(n)
+        def nu(n):
+            if n == 0:
+                return 1
+            return 2
+        
+        
+        
+        for k in k_values:
+        
+
+     
+        
+            ka = k * a
+            N_max = int(np.ceil(ka + 10))  # Number of summations
+            Hz_scat = 0.0
+
+            for n in range(0, 2 * N_max + 1):
+                an = (-1j) ** nu(n)
+                term = A * (
+                        jv(n, k * rho) - jv(n, ka) / hankel2(n, ka) * hankel2(n, k * rho)
+                ) * np.cos(n * phi)
+                termcomp = an * term
+                Hz_scat += termcomp
+
+            Hz_scat_values.append(np.abs(Hz_scat))  # Store the magnitude of Hz_scat
+
+        # Plot the results
+        figH=plt.figure(figsize=(10, 6))
+        axH = figH.add_subplot(111)  # Create an Axes object in the figure
+        axH.plot(k_values*sim_ob.c, Hz_scat_values, label="|Hz_scat|")  # Plot on the Axes
+        axH.set_label(f"Observation Point ({obs.x}, {obs.y})")
+        axH.set_title("Frequency Response of Hz_scat")
+        axH.set_xlabel("Wavevector k (proportional to frequency)")
+        axH.set_ylabel("|Hz_scat|")
+        axH.grid(True)
+        axH.legend()
+        plt.show()
+
+    
+
+#frequency_analysis(sim)
+#analytical_solution(sim_ob=sim)
+
+def compare_numerical_analytical(sim_object):
+    for obs in sim_object.observation_points.values():
+        # --- Numerical FFT ---
+        hz_fft = np.fft.fft(obs.hz_values)
+        freq_numerical = np.fft.fftfreq(len(obs.hz_values), d=sim_object.dt)
+        hz_fft_magnitude = np.abs(hz_fft[:len(hz_fft) // 2])
+        freq_numerical = freq_numerical[:len(freq_numerical) // 2]
+
+        # --- Analytical Hz_scat ---
+        rho = np.sqrt(obs.x**2 + obs.y**2)
+        phi = np.arctan2(obs.y, obs.x)
+
+        k_values = np.linspace(0.1, 2 * sim_object.k, 500)
+        a = None
+        for scatterer in sim_object.scatterer_list:
+            if scatterer.shape == 'circle':
+                a = scatterer.geometry['radius']
+                break
+        if a is None:
+            raise ValueError("No circular scatterer found.")
+
+        A = 1
+        def nu(n): return 1 if n == 0 else 2
+
+        Hz_scat_values = []
+        for k in k_values:
+            ka = k * a
+            N_max = int(np.ceil(ka + 10))
+            Hz_scat = 0.0
+            for n in range(0, 2 * N_max + 1):
+                an = (-1j) ** nu(n)
+                term = A * (
                     jv(n, k * rho) - jv(n, ka) / hankel2(n, ka) * hankel2(n, k * rho)
-            ) * np.cos(n * phi)
-            termcomp = an * term
-            Hz_scat += termcomp
+                ) * np.cos(n * phi)
+                Hz_scat += an * term
+            Hz_scat_values.append(np.abs(Hz_scat))
 
-        Hz_scat_values.append(np.abs(Hz_scat))  # Store the magnitude of Hz_scat
+        freq_analytical = k_values * sim_object.c  # Convert k to frequency
 
-    # Plot the results
-    plt.figure(figsize=(10, 6))
-    plt.plot(k_values, Hz_scat_values, label="|Hz_scat|")
-    plt.title("Frequency Response of Hz_scat")
-    plt.xlabel("Wavevector k (proportional to frequency)")
-    plt.ylabel("|Hz_scat|")
-    plt.grid(True)
-    plt.legend()
-    plt.show()
+        # --- Interpolation for alignment ---
+        interp_analytical = np.interp(freq_numerical, freq_analytical, Hz_scat_values)
 
-# frequency_analysis(sim)
+        difference = hz_fft_magnitude - interp_analytical
+        diff_max = np.max(np.abs(difference))
 
 
+        # --- Plot comparison ---
+        fig=plt.figure(figsize=(10, 6))
+        axc= fig.add_subplot(111)
+        axc.plot(freq_numerical, np.abs(difference), label="difference", alpha=0.7)
+        axc.set_xlim(0, np.max(freq_numerical))
+        axc.set_ylim(0, 2*diff_max) # Adjust y-axis limit for better visibility 
+        plt.title(f"Frequency Response Comparison at Observation Point ({obs.x}, {obs.y})")
+        plt.xlabel("Frequency (Hz)")
+        plt.ylabel("Magnitude")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
 
-
+#compare_numerical_analytical(sim)
 
 
 
 #For testing purposes
 #sim = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
-#                    10,10,10000000,10000000000000,['8.9,10','11.1,10']))
+#                    10,10,10000000,10000000000000,['6,10','14,10']))
 Lx, Ly, PW, scatter_list, obs_dict_tuples, nt = Run()
 sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
 sim.iterate(int(nt), visu = True, just1D=False, saving=False)
