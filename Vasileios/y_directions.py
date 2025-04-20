@@ -133,8 +133,6 @@ class FDTD:
         self.PML_KappaMax = 1.0
         self.PML_SigmaMax = (self.PML_m + 1) / (150 * np.pi)
 
-        def kappa(self, i):
-            return 1 + (self.PML_KappaMax - 1) / ((i / self.PML_n) ** self.PML_m)
 
         def sigma_e(self, i):
             return self.PML_SigmaMax * (i / self.PML_n) ** self.PML_m
@@ -281,7 +279,6 @@ class FDTD:
             self.maskPECx -= ndimage.binary_erosion(self.maskPECx).astype(int)
             self.maskPECy -= ndimage.binary_erosion(self.maskPECy).astype(int)
         if self.there_is_PMC:
-            print('PMC found')              # debugger
             bulkx = self.maskPMCx
             bulky = self.maskPMCy
             for scatterer in self.scatterer_list:
@@ -333,8 +330,8 @@ class FDTD:
         self.TFSFeleft[tfi:-tfie - 1, tfie] = 1
         self.TFSFeright[tfi:-tfie - 1, -tfie - 1] = 1
 
-        self.TFSFeup[tfie, tfie:-tfie ] = 1
-        self.TFSFedown[-tfie - 1, tfie:-tfie] = 1
+        self.TFSFeup[tfie, tfi:-tfie - 1 ] = 1
+        self.TFSFedown[-tfie - 1, tfi:-tfie - 1] = 1
 
         if self.direction == '+x':
             self.aux1Dgrid = self.dx[tfi-2:-tfi+2]   #include 2 cells before interface and 2 after other end interface
@@ -420,16 +417,19 @@ class FDTD:
 
         # TFSF
         if self.direction == '+x' or self.direction == '-x':
+            print(self.Hz_1D.shape)
             self.Ey[self.TFSFeleft == 1] += self.dt * self.Hz_1D[1] / (self.epsilon_0 * self.DX_Ey[self.TFSFeleft == 1])
             self.Ey[self.TFSFeright == 1] -= self.dt * self.Hz_1D[-2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeright == 1])
-            self.Ex[self.TFSFedown == 1] += self.dt * self.Hz_1D[1:-1] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
-            self.Ex[self.TFSFeup == 1] -= self.dt * self.Hz_1D[1:-1] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
+            self.Ex[self.TFSFedown == 1] += self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
+            self.Ex[self.TFSFeup == 1] -= self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
         else:
             print(f'Ey {self.Ey[self.TFSFeleft==1].shape} , Hz{self.Hz_1D[1:-1].shape} , {self.aux1Dgrid.shape}')
-            self.Ey[self.TFSFeleft==1] += self.dt * self.Hz_1D[2:-2] / self.epsilon_0 * self.DX_Ey[self.TFSFeleft==1]
-            self.Ey[self.TFSFeright==1] -= self.dt * self.Hz_1D[2:-2] / self.epsilon_0 * self.DX_Ey[self.TFSFeright==1]
-            self.Ex[self.TFSFeup ==1] -= self.dt * self.Hz_1D[-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
+            print(self.Hz_1D.shape)
+            self.Ey[self.TFSFeleft==1] += self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeleft==1])
+            self.Ey[self.TFSFeright==1] -= self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeright==1])
             self.Ex[self.TFSFedown==1] += self.dt * self.Hz_1D[1] / (self.epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
+            self.Ex[self.TFSFeup ==1] -= self.dt * self.Hz_1D[-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
+
 
         # Hz updates
         self.Hz[1:-1,1:-1] += self.dt / self.mu_grid[1:-1,1:-1] * ( ((self.Ex[1:,1:-1] - self.Ex[:-1,1:-1]) / self.DY_Hz[1:-1,1:-1] ) +
@@ -481,10 +481,10 @@ class FDTD:
         :param time:  time to update source cell
         :return:
         """
-        if self.direction == '+x' or self.direction == '+y':
+        if self.direction == '+x' or self.direction == '-y':
             self.Hz_1D[0] = self.A * np.exp(-(time - self.tc)**2 / (2 * self.s_pulse**2))
             # self.Hz_1D[-1] #BC
-        elif self.direction == '-x' or self.direction == '-y':
+        elif self.direction == '-x' or self.direction == '+y':
             self.Hz_1D[-1] = self.A * np.exp(-(time - self.tc) ** 2 / (2 * self.s_pulse ** 2))
             # self.Hz_1D[0] #BC
         # self.Hz_1D[0] = self.A * np.exp(-(time - self.tc) ** 2 / (2 * self.s_pulse ** 2)) * np.sin(time * 2 * np.pi * self.fc)    <-- change source type?
@@ -562,7 +562,7 @@ class FDTD:
                     ax.text(0.5, 1.05, '%d/%d' % (it, nt),
                             size=plt.rcParams["axes.titlesize"],
                             ha="center", transform=ax.transAxes),
-                    ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-1*self.A,vmax=1*self.A)
+                    ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-1*self.A,vmax=1*self.A,cmap='seismic')
                 ]
                 for obs in sim.observation_points.values():
                     artists.append(ax.plot(obs.x, obs.y, 'ko', fillstyle="none")[0])
@@ -654,7 +654,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma,
     #       f'the user prefers manual input enter them in dt,tc format otherwise just enter.')
     # if bool(steps):
     #     dt,tc = map(float,steps.split(','))
-    direction = '+y'
+    direction = '-x'
     PW = { 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction}
     # 3. scatterers
     # shape = input('Please provide the shape of the scatterer (circle or rectangle or free or none): ')     #defien free later
@@ -711,7 +711,7 @@ sim = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'PMC',
 
 # sim.debugger(show_grid=False, field='Ex')
 # nt = (sim.Lx / 1) / (sim.dt * sim.c)
-nt = 400
+nt = 200
 
 sim.iterate(int(nt), visu = True, saving=False)
 
