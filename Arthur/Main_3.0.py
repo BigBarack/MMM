@@ -21,11 +21,13 @@ TODO - MMM.p1
 """
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
 from matplotlib.collections import LineCollection
 from matplotlib.animation import ArtistAnimation
 from matplotlib.ticker import MaxNLocator
 from scipy.special import hankel2
 from scipy.special import jv
+from scipy import ndimage
 
 
 
@@ -101,11 +103,11 @@ class FDTD:
         # constants
         self.epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
         self.mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
-        self.c = 1 / np.sqrt(self.mu_0 * self.epsilon_0)  # Speed of light in vacuum
+        self.c = 100 / np.sqrt(self.mu_0 * self.epsilon_0)  # Speed of light in vacuum
 
         # sim area
-        self.Lx = Lx
-        self.Ly = Ly
+        self.Lx = Lx * 0.01
+        self.Ly = Ly * 0.01
 
         # Plane Wave
         self.lmin = PW['lmin']
@@ -119,41 +121,45 @@ class FDTD:
         self.dx_coarse = self.lmin / 10
         self.dx_inter1 = self.dx_coarse / ( 2 ** (1/3) )
         self.dx_inter2 = self.dx_inter1 / ( 2 ** (1/3) )
-        self.dx_fine = self.dx_inter2 / ( 2 ** (1/3) )
+        self.dx_fine = self.lmin / 20
         self.scatterer_list = scatterer_list
         self.observation_points = observation_points
         self.there_is_Drude = any([ scat.material == 'Drude' for scat in scatterer_list])
+        self.there_is_PEC = any([scat.material == 'PEC' for scat in scatterer_list])
         self.there_is_PMC = any([scat.material == 'PMC' for scat in scatterer_list])
 
         # PML
         self.PML_n = 15
         self.PML_m = 4
         self.PML_KappaMax = 1.0
-        self.PML_SigmaMax = (self.PML_m+1)/(150*np.pi)
-        def kappa(self,i):
-            return 1+(self.PML_KappaMax-1)/((i/self.PML_n)**self.PML_m)
-        def sigma_e(self,i):
-            return self.PML_SigmaMax*(i/self.PML_n)**self.PML_m
-        def sigma_h(self,i):
-            return sigma_e(self,i)*self.mu_0/self.epsilon_0
-        def sigmamask(self,array,axis):
+        self.PML_SigmaMax = (self.PML_m + 1) / (150 * np.pi)
+
+
+        def sigma_e(self, i):
+            return self.PML_SigmaMax * (i / self.PML_n) ** self.PML_m
+
+        def sigma_h(self, i):
+            return sigma_e(self, i) * self.mu_0 / self.epsilon_0
+
+        def sigmamask(self, array, axis):
             mask = np.zeros_like(array)
             if axis == 0:
                 for i in range(self.PML_n):
-                    mask[self.PML_n-i,:],mask[-(self.PML_n-i),:]=sigma_e(self,i)*self.dx/(self.dx_coarse**2),sigma_e(self,i)*self.dx/(self.dx_coarse**2)
-                    print(self.dx)
+                    mask[self.PML_n - i, :], mask[-(self.PML_n - i), :] = sigma_e(self, i) * self.dx / (
+                                self.dx_coarse ** 2), sigma_e(self, i) * self.dx / (self.dx_coarse ** 2)
+                    # print(self.dx)
             elif axis == 1:
                 for i in range(self.PML_n):
-                    mask[:,self.PML_n-i],mask[:,-(self.PML_n-i)]=sigma_e(self,i)*self.dy/(self.dx_coarse**2),sigma_e(self,i)*self.dy/(self.dx_coarse**2)
+                    mask[:, self.PML_n - i], mask[:, -(self.PML_n - i)] = sigma_e(self, i) * self.dy / (
+                                self.dx_coarse ** 2), sigma_e(self, i) * self.dy / (self.dx_coarse ** 2)
             elif axis == 2:
                 for i in range(self.PML_n):
-                    mask[self.PML_n-i,:],mask[-(self.PML_n-i),:]=sigma_h(self,i)*self.dx/(self.dx_coarse**2),sigma_h(self,i)*self.dx/(self.dx_coarse**2)
-                    mask[:,self.PML_n-i],mask[:,-(self.PML_n-i)]=sigma_h(self,i)*self.dy/(self.dx_coarse**2),sigma_h(self,i)*self.dy/(self.dx_coarse**2)
+                    mask[self.PML_n - i, :], mask[-(self.PML_n - i), :] = sigma_h(self, i) * self.dx / (
+                                self.dx_coarse ** 2), sigma_h(self, i) * self.dx / (self.dx_coarse ** 2)
+                    mask[:, self.PML_n - i], mask[:, -(self.PML_n - i)] = sigma_h(self, i) * self.dy / (
+                                self.dx_coarse ** 2), sigma_h(self, i) * self.dy / (self.dx_coarse ** 2)
             return mask
 
-
-
-        
         # generate grid; from physical x,y to discrete
         x = [0.0]
         x0 = 0.0  # running cursor
@@ -238,23 +244,63 @@ class FDTD:
         self.TFSFhdown = np.zeros_like(self.Hz)
         self.TFSFhleft = np.zeros_like(self.Hz)
         self.TFSFhright = np.zeros_like(self.Hz)
+
         self.TFSFeleft = np.zeros_like(self.Ey)
         self.TFSFeright = np.zeros_like(self.Ey)
         self.TFSFeup = np.zeros_like(self.Ex)
         self.TFSFedown = np.zeros_like(self.Ex)
-
         self.mask_Ex = np.zeros_like(self.Ex)
         self.mask_Ey = np.zeros_like(self.Ey)
-        _ , Y_edges = np.meshgrid(x_centers, self.y_edges[1:-1], indexing='xy') #for Ex
-        X_edges, _ = np.meshgrid(self.x_edges[1:-1], y_centers, indexing='xy') #for Ey
+        self.maskPECx = np.zeros_like(self.Ex)
+        self.maskPECy = np.zeros_like(self.Ey)
+        self.maskPMCx = np.zeros_like(self.Ex)
+        self.maskPMCy = np.zeros_like(self.Ey)
+        self.maskPMCz = np.zeros_like(self.Hz)
+
+        _ , self.Y_edges = np.meshgrid(x_centers, self.y_edges[1:-1], indexing='xy') #for Ex
+        self.X_edges, _ = np.meshgrid(self.x_edges[1:-1], y_centers, indexing='xy') #for Ey
 
         for scatterer in self.scatterer_list:
             inside_z = scatterer.is_inside(self.Xc, self.Yc)            #Hz; (Ny,Nx)
-            inside_x = scatterer.is_inside(self.Xc[:-1,:], Y_edges)     #Ex; (Ny-1,Nx)
-            inside_y = scatterer.is_inside(X_edges, self.Yc[:,:-1])     #Ey; (Ny,Nx-1)
+            inside_x = scatterer.is_inside(self.Xc[:-1,:], self.Y_edges)     #Ex; (Ny-1,Nx)
+            inside_y = scatterer.is_inside(self.X_edges, self.Yc[:,:-1])     #Ey; (Ny,Nx-1)
             self.mask_Hz[inside_z] = scatterer.ID
             self.mask_Ex[inside_x] = scatterer.ID
             self.mask_Ey[inside_y] = scatterer.ID
+
+        if self.there_is_PEC:
+            print('PEC found')              # debugger
+            for scatterer in self.scatterer_list:   #locate all the PECs
+                if scatterer.material == 'PEC':
+                    self.maskPECx[self.mask_Ex == scatterer.ID] = 1
+                    self.maskPECy[self.mask_Ey == scatterer.ID] = 1
+            # get only their surface
+            self.maskPECx -= ndimage.binary_erosion(self.maskPECx).astype(int)
+            self.maskPECy -= ndimage.binary_erosion(self.maskPECy).astype(int)
+        if self.there_is_PMC:
+            bulkx = self.maskPMCx
+            bulky = self.maskPMCy
+            for scatterer in self.scatterer_list:
+                if scatterer.material == 'PMC':     #locate all PMCs
+                    bulkx[self.mask_Ex == scatterer.ID] = 1 #not yet bulk here
+                    bulky[self.mask_Ey == scatterer.ID] = 1
+                    self.maskPMCz[self.mask_Hz == scatterer.ID] = 1
+
+            # get only surfaces
+            surfx = bulkx - ndimage.binary_erosion(bulkx).astype(int)
+            surfy = bulky - ndimage.binary_erosion(bulky).astype(int)
+            self.maskPMCz -= ndimage.binary_erosion(self.maskPMCz).astype(int)
+            # get only bulk
+            bulkx = ndimage.binary_erosion(bulkx).astype(int)
+            bulky = ndimage.binary_erosion(bulky).astype(int)
+
+            self.maskPMCx[:, 1:] = (surfx[:, 1:].astype(bool) & bulkx[:,:-1].astype(bool)).astype(int)
+            self.maskPMCx[:, :-1] = (self.maskPMCx[:, :-1].astype(bool) | (surfx[:,:-1].astype(bool) & bulkx[:,1:].astype(bool))).astype(int)
+            self.maskPMCy[1:,:] = (surfy[1:, :].astype(bool) & bulky[:-1,:].astype(bool)).astype(int)
+            self.maskPMCy[:-1, :] = (self.maskPMCy[:-1, :].astype(bool) | (
+                        surfy[:-1, :].astype(bool) & bulky[1:, :].astype(bool))).astype(int)
+
+
 
         for scatterer in self.scatterer_list:
             if scatterer.material == 'Drude':
@@ -262,14 +308,16 @@ class FDTD:
                 self.mu_grid[self.mask_Hz == scatterer.ID] = scatterer.properties['m_r'] * self.mu_0
                 #unphysical, is storing e_0,m_0 for PEC & PMC, used for the avg, locations with PMC/PEC use BC updates
         self.epsilon_yavg = (self.epsilon_grid[:-1, :] + self.epsilon_grid[1:, :]) / 2
-        self.PML_ExMask = sigmamask(self,self.epsilon_yavg,0)
         self.epsilon_xavg = (self.epsilon_grid[:,:-1] + self.epsilon_grid[:,1:]) / 2
-        self.PML_EyMask = sigmamask(self,self.epsilon_xavg,1)
         self.mu_crossavg = cross_average2Drray(self.mu_grid)
-        self.PML_HzMask = sigmamask(self,self.mu_crossavg,2)
+
+        self.PML_ExMask = sigmamask(self, self.epsilon_yavg, 0)
+        self.PML_EyMask = sigmamask(self, self.epsilon_xavg, 1)
+        self.PML_HzMask = sigmamask(self, self.mu_crossavg, 2)
+
 
         # PW TFST
-        self.edge_to_TFSF = 30 # decide later depedning on PML, this is in cells or index
+        self.edge_to_TFSF = 20 # decide later depedning on PML, this is in cells or index
         tfi = self.edge_to_TFSF
         tfie = tfi -1
         self.TFSFhup[tfi, tfi:-tfi ] = 1
@@ -279,10 +327,10 @@ class FDTD:
         self.TFSFhright[tfi:-tfi , -tfi - 1] = 1
 
         self.TFSFeleft[tfi:-tfie - 1, tfie] = 1
-        self.TFSFeright[tfi:-tfie - 1, -tfie - 1] = 1
+        self.TFSFeright[tfi:-tfie - 1, -tfie - 1] = 1           #ISSUES HERE
 
-        self.TFSFeup[tfie, tfie:-tfie ] = 1
-        self.TFSFedown[-tfie - 1, tfie:-tfie] = 1
+        self.TFSFeup[tfie, tfi:-tfie - 1 ] = 1
+        self.TFSFedown[-tfie - 1, tfi:-tfie - 1] = 1
 
         if self.direction == '+x':
             self.aux1Dgrid = self.dx[tfi-2:-tfi+2]   #include 2 cells before interface and 2 after other end interface
@@ -290,13 +338,15 @@ class FDTD:
             self.aux1Dgrid = self.dx[tfi-2:-tfi+2][::-1]
         elif self.direction == '+y':
             self.aux1Dgrid = self.dy[tfi-2:-tfi+2]
-        else:  # self.direction == '+y':
+        else:  # self.direction == '-y':
             self.aux1Dgrid = self.dy[tfi-2:-tfi+2][::-1]
         self.auxdual = 0.5 * (self.aux1Dgrid[:-1] + self.aux1Dgrid[1:])
         self.Hz_1D = np.zeros_like(self.aux1Dgrid)    #in update we dont touch [0], source there
         self.E_inc = np.zeros_like(self.auxdual)
+        self.auxbc1 = 0
+        self.auxbc2 = 0
 
-        # observation points located in respecitive fields
+        # observation points located in respective fields
         for obs in self.observation_points.values():
             # use the x and y edges or centers to locate physical space (x,y) points into our discrete grids
             ix_from_edges = np.searchsorted(self.x_edges,obs.x) - 1
@@ -337,9 +387,14 @@ class FDTD:
 
         # Ex & Ey updates
         # self.Ex += self.dt / self.epsilon_0 * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex     # no spatial averaging
-        self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex - (self.dt/self.epsilon_0) * np.multiply(self.PML_ExMask,self.Ex)
+        # self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex    # no PML
+        self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex - (
+                    self.dt / self.epsilon_0) * np.multiply(self.PML_ExMask, self.Ex)
+
         # self.Ey += self.dt / self.epsilon_0 * (self.Hz[:,:-1] - self.Hz[:,1:]) / self.DX_Ey
-        self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey - (self.dt/self.epsilon_0) * np.multiply(self.PML_EyMask,self.Ey)
+        # self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey    # no PML
+        self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey - (
+                    self.dt / self.epsilon_0) * np.multiply(self.PML_EyMask, self.Ey)
 
         if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
             for scatterer in self.scatterer_list:
@@ -353,48 +408,72 @@ class FDTD:
                     self.Ex[maskx] -= self.dt * self.Jcx[maskx] / self.epsilon_yavg[maskx]
                     self.Ey[masky] -= self.dt * self.Jcy[masky] / self.epsilon_xavg[masky]
 
+        if self.there_is_PEC:
+            self.Ex[self.maskPECx == 1] = 0
+            self.Ey[self.maskPECy == 1] = 0
+
+        if self.there_is_PMC:
+            self.Ex[self.maskPMCx==1] = 0
+            self.Ey[self.maskPMCy==1] = 0
+
         # TFSF
-        self.Ey[self.TFSFeleft == 1] += self.dt * self.Hz_1D[1] / (self.epsilon_0 * self.DX_Ey[self.TFSFeleft == 1])
-        self.Ey[self.TFSFeright == 1] -= self.dt * self.Hz_1D[-2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeright == 1])
-        self.Ex[self.TFSFedown == 1] += self.dt * self.Hz_1D[1:-1] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
-        self.Ex[self.TFSFeup == 1] -= self.dt * self.Hz_1D[1:-1] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
+        if self.direction == '+x' or self.direction == '-x':
+            # print(self.Ex[self.TFSFedown == 1].shape)
+            self.Ey[self.TFSFeleft == 1] += self.dt * self.Hz_1D[1] / (self.epsilon_0 * self.DX_Ey[self.TFSFeleft == 1])
+            self.Ey[self.TFSFeright == 1] -= self.dt * self.Hz_1D[-2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeright == 1])
+            self.Ex[self.TFSFedown == 1] += self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
+            self.Ex[self.TFSFeup == 1] -= self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
+        else:
+            print(f'Ey_left {self.Ey[self.TFSFeleft==1].shape} , Hz{self.Hz_1D[2:-2].shape} , {self.aux1Dgrid.shape}')
+            print(self.Hz_1D.shape)
+            self.Ey[self.TFSFeleft==1] += self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeleft==1]) *20
+            self.Ey[self.TFSFeright==1] -= self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeright==1])
+            self.Ex[self.TFSFedown==1] += self.dt * self.Hz_1D[1] / (self.epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
+            self.Ex[self.TFSFeup ==1] -= self.dt * self.Hz_1D[-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
+
 
         # Hz updates
         self.Hz[1:-1,1:-1] += self.dt / self.mu_grid[1:-1,1:-1] * ( ((self.Ex[1:,1:-1] - self.Ex[:-1,1:-1]) / self.DY_Hz[1:-1,1:-1] ) +
                                            (self.Ey[1:-1,:-1] - self.Ey[1:-1,1:]) / self.DX_Hz[1:-1,1:-1] ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,1:-1],self.Hz[1:-1,1:-1])
 
+        if self.there_is_PMC:
+            self.Hz[self.maskPMCz==1] = 0
+
         # BC bounding box; PEC = tangential electric field set to zero
         # top BC
         self.Hz[0,1:-1] += self.dt / self.mu_crossavg[0,1:-1] * ( ((self.Ex[0,1:-1] - 0 ) / self.DY_Hz[0,1:-1] ) +
-                                           ((self.Ey[0,:-1] - self.Ey[0,1:]) / self.DX_Hz[0,1:-1]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,1:-1],self.Hz[0,1:-1])
+                                           ((self.Ey[0,:-1] - self.Ey[0,1:]) / self.DX_Hz[0,1:-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,1:-1],self.Hz[0,1:-1])
         # bot BC
         self.Hz[-1,1:-1] += self.dt / self.mu_crossavg[-1,1:-1] * ( ((0 - self.Ex[-1,1:-1]) / self.DY_Hz[-1,1:-1] ) +
-                                           ((self.Ey[-1,:-1] - self.Ey[-1,1:]) / self.DX_Hz[-1,1:-1]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,1:-1],self.Hz[-1,1:-1])
+                                           ((self.Ey[-1,:-1] - self.Ey[-1,1:]) / self.DX_Hz[-1,1:-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,1:-1],self.Hz[-1,1:-1])
         # left BC
         self.Hz[1:-1,0] += self.dt / self.mu_crossavg[1:-1,0] * ( ((self.Ex[1:,0] - self.Ex[:-1,0]) / self.DY_Hz[1:-1,0] ) +
-                                           (( 0 - self.Ey[1:-1,0]) / self.DX_Hz[1:-1,0]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,0],self.Hz[1:-1,0])
+                                           (( 0 - self.Ey[1:-1,0]) / self.DX_Hz[1:-1,0]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,0],self.Hz[1:-1,0])
         # right BC
         self.Hz[1:-1,-1] += self.dt / self.mu_crossavg[1:-1,-1] * ( ((self.Ex[1:,-1] - self.Ex[:-1,-1]) / self.DY_Hz[1:-1,-1] ) +
-                                           ((self.Ey[1:-1,-1] - 0 ) / self.DX_Hz[1:-1,-1]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,-1],self.Hz[1:-1,-1])
+                                           ((self.Ey[1:-1,-1] - 0 ) / self.DX_Hz[1:-1,-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,-1],self.Hz[1:-1,-1])
         # corners topleft, topright, botleft, botright
         self.Hz[0,0] += self.dt / self.mu_crossavg[0,0] * ( ((self.Ex[0,0] - 0) / self.DY_Hz[0,0] ) +
-                                           ( 0 - self.Ey[0,0]) / self.DX_Hz[0,0] ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,0],self.Hz[0,0])
+                                           ( 0 - self.Ey[0,0]) / self.DX_Hz[0,0] )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,0],self.Hz[0,0])
         self.Hz[0,-1] += self.dt / self.mu_crossavg[0,-1] * ( ((self.Ex[0,-1] - 0) / self.DY_Hz[0,-1] ) +
-                                           (( self.Ey[0,-1] - 0) / self.DX_Hz[0,-1]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,-1],self.Hz[0,-1])
+                                           (( self.Ey[0,-1] - 0) / self.DX_Hz[0,-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,-1],self.Hz[0,-1])
         self.Hz[-1,0] += self.dt / self.mu_crossavg[-1,0] * ( (( 0 - self.Ex[-1,0]) / self.DY_Hz[-1,0] ) +
-                                           (( 0 - self.Ey[-1,0]) / self.DX_Hz[-1,0]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,0],self.Hz[-1,0])
+                                           (( 0 - self.Ey[-1,0]) / self.DX_Hz[-1,0]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,0],self.Hz[-1,0])
         self.Hz[-1,-1] += self.dt / self.mu_crossavg[-1,-1] * ( (( 0 - self.Ex[-1,-1]) / self.DY_Hz[-1,-1] ) +
-                                           ((self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1]) ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,-1],self.Hz[-1,-1])
+                                           ((self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,-1],self.Hz[-1,-1])
 
         #for TFSF, we just += 'known' terms on the interface and right outside
-        self.Hz[self.TFSFhleft == 1] += self.dt / (self.mu_0 * self.DX_Hz[self.TFSFhleft == 1]) * self.E_inc[1]
-        self.Hz[self.TFSFhright == 1] -= self.dt / (self.mu_0 * self.DX_Hz[self.TFSFhright == 1]) * self.E_inc[-2]
-        # for +x, Ex_inc = 0 so top bottom dont get changed
+        if self.direction == '+x' or self.direction == '-x':
+            self.Hz[self.TFSFhleft == 1] += self.dt / (self.mu_0 * self.DX_Hz[self.TFSFhleft == 1]) * self.E_inc[1]
+            self.Hz[self.TFSFhright == 1] -= self.dt / (self.mu_0 * self.DX_Hz[self.TFSFhright == 1]) * self.E_inc[-1]
+        else:   # +y -y
+            self.Hz[self.TFSFhdown == 1] += self.dt / (self.mu_0 * self.DY_Hz[self.TFSFhdown == 1]) * self.E_inc[1]
+            self.Hz[self.TFSFhup == 1] -= self.dt / (self.mu_0 * self.DY_Hz[self.TFSFhup == 1]) * self.E_inc[-1]
+        # for +-x, Ex_inc = 0 so top bottom dont get changed, for +-y Ey_inc = 0
 
         self.update_observation_points()
 
-    # BC for PMC and PEC logic
-        #will be implemented soon
+
 
     def source_pw(self, time):
         """
@@ -403,8 +482,15 @@ class FDTD:
         :param time:  time to update source cell
         :return:
         """
-
-        self.Hz_1D[0] = self.A * np.exp(-(time - self.tc)**2 / (2 * self.s_pulse**2))
+        if self.direction == '+x' or self.direction == '-y':
+            self.Hz_1D[0] = self.A * np.exp(-(time - self.tc)**2 / (2 * self.s_pulse**2))
+            self.Hz_1D[-1] = self.auxbc2
+            self.auxbc2 = self.auxbc1
+            self.auxbc1 = self.Hz_1D[-2]
+        elif self.direction == '-x' or self.direction == '+y':
+            self.Hz_1D[-1] = self.A * np.exp(-(time - self.tc) ** 2 / (2 * self.s_pulse ** 2))
+            # self.Hz_1D[0] #BC
+        # self.Hz_1D[0] = self.A * np.exp(-(time - self.tc) ** 2 / (2 * self.s_pulse ** 2)) * np.sin(time * 2 * np.pi * self.fc)    <-- change source type?
         self.E_inc += self.dt * (self.Hz_1D[:-1] - self.Hz_1D[1:]) / (self.epsilon_0 * self.auxdual)
         self.Hz_1D[1:-1] += self.dt * (self.E_inc[:-1] - self.E_inc[1:]) / (self.mu_0 * self.aux1Dgrid[1:-1])
         # add Mur's ABC later for last Hz cell of ADE of TFSF
@@ -417,18 +503,28 @@ class FDTD:
             ey = self.Ey[slice(*obs.coordinates['ey'])]
             obs.add_sample(ex,ey,hz)
 
-    def debugger(self,show_grid = False):
+    def debugger(self,show_grid = False, field = 'Hz'):
         """
         used to print the masks on the Hz grid
         :param show_grid:
         :return:
         """
         fig, ax = plt.subplots(figsize=(8, 8))
-        ax.contourf(self.Xc, self.Yc, self.mask_Hz, levels=[0.5, 1], colors='black', linestyles='--')
-        # ax.contourf(self.Xc, self.Yc, self.TFSF, levels=[0.5, 1], colors='black', linestyles='--')
+        if field == 'Hz':
+            ax.contourf(self.Xc, self.Yc, self.mask_Hz, levels=[0.5, 1], colors='black', linestyles='--')
+            ax.contour(self.Xc, self.Yc, self.TFSFhup, levels=[0.5, 1], colors='black', linestyles='--')
+            ax.contour(self.Xc, self.Yc, self.TFSFhdown, levels=[0.5, 1], colors='black', linestyles='--')
+            ax.contour(self.Xc, self.Yc, self.TFSFhleft, levels=[0.5, 1], colors='black', linestyles='--')
+            ax.contour(self.Xc, self.Yc, self.TFSFhright, levels=[0.5, 1], colors='black', linestyles='--')
+
+        elif field == 'Ex':
+            ax.contourf(self.Xc[:-1,:], self.Y_edges, self.mask_Ex, levels=[0.5, 1], colors='black', linestyles='--')
+        else:
+            ax.contourf(self.X_edges, self.Yc[:-1], self.mask_Ex, levels=[0.5, 1], colors='black', linestyles='--')
+
+
         for obs in self.observation_points.values():
             ax.plot(obs.x, obs.y, 'mo', fillstyle="none", label='Observation Point')
-
         # Plot non-uniform grid lines (physical Yee grid)
         if show_grid:
             h_lines = [[(self.x_edges[0], y), (self.x_edges[-1], y)] for y in self.y_edges]
@@ -443,6 +539,8 @@ class FDTD:
         ax.invert_yaxis()
         plt.show()
 
+    
+
     def iterate(self,nt, visu=True,saving = False):
 
         # timeseries = np.zeros((nt,))   # may be used in the future if PW implementation changes
@@ -451,6 +549,10 @@ class FDTD:
         ax.invert_yaxis()
         plt.axis('equal')
         movie = []
+        binary = plt.cm.binary(np.linspace(0, 1, 256))
+        alphas = np.linspace(0.0, 1.0, 256)
+        binary[:, -1] = alphas 
+        binary_alpha = ListedColormap(binary)
 
         for it in range(0,nt):
             t = (it - 1) * self.dt
@@ -472,17 +574,22 @@ class FDTD:
                     ax.text(0.5, 1.05, '%d/%d' % (it, nt),
                             size=plt.rcParams["axes.titlesize"],
                             ha="center", transform=ax.transAxes),
-                    ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-0.02*self.A,vmax=0.02*self.A)
+                    ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-1*self.A,vmax=1*self.A),
+                    #ax.contourf(self.x_edges[:-1],self.y_edges[:-1],self.mask_Hz,cmap=binary_alpha,vmin=0,vmax=1)
                 ]
                 for obs in sim.observation_points.values():
-                    artists.append(ax.plot(obs.x, obs.y, 'ko', fillstyle="none")[0],)
+                    artists.append(ax.plot(obs.x, obs.y, 'ko', fillstyle="none")[0])
+                if self.there_is_PMC:
+                    artists.append(ax.contourf(self.x_edges[:-1],self.y_edges[:-1],self.maskPMCz,cmap=binary_alpha,vmin=0,vmax=1))
+                if self.there_is_PEC:
+                    artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskPECy,cmap=binary_alpha,vmin=0,vmax=1))
                 movie.append(artists)
         print('iterations done')
         if visu:
             my_anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000,
                                       blit=True)
             if saving:
-                my_anim.save(filename='PW.gif', writer='pillow')
+                my_anim.save(filename='tfsfjo.gif', writer='pillow')
             plt.show()
 
 
@@ -518,11 +625,11 @@ def user_inputs():
     while shape != 'none':
         if shape == 'circle':
             xc,yc,r = input('Please provide the center coordinates and the radius in xc,xy,radius format: ').split(',')
-            geometry = {'center': (float(xc), float(yc)), 'radius': float(r)}
+            geometry = {'center': (float(xc)*0.01, float(yc)*0.01), 'radius': float(r)*0.01}
         elif shape == 'rectangle':
             xi,xf,yi,yf = input('Please provide the coordinate ranges of the scatterer in '
                                 'xmin,xmax,ymin,ymax format: ').split(',')
-            geometry = { 'xi':float(xi), 'xf':float(xf), 'yi':float(yi), 'yf':float(yf) }
+            geometry = { 'xi':float(xi)*0.01, 'xf':float(xf)*0.01, 'yi':float(yi)*0.01, 'yf':float(yf)*0.01 }
         else:
             # error handling
             shape = input('Please provide the shape of the scatterer (circle or rectangle or none); typo: ')
@@ -543,7 +650,7 @@ def user_inputs():
     obs_dict_tuples = {}
     for xy in observation_points_lstr:
         a,b = xy.split(',')
-        obs_dict_tuples[(float(a), float(b))] = ObservationPoint(float(a),float(b))
+        obs_dict_tuples[(float(a)*0.01, float(b)*0.01)] = ObservationPoint(float(a)*0.01,float(b)*0.01)
 
     return Lx, Ly, PW, scatter_list, obs_dict_tuples
 
@@ -559,7 +666,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma,
     dx_min = l_min / 20
     CFL = 1
     dt = CFL / ( c * np.sqrt((1 / dx_min ** 2) + (1 / dx_min ** 2)))   # time step from spatial disc. & CFL
-    tc = 5 * s_pulse                                                   # suggested tc >= 5 * sigma
+    tc = 6 * s_pulse                                                   # suggested tc >= 5 * sigma
     # steps = input(f'For the given pulse width, timestep = {dt} and central time tc = {tc} are recommended; If '
     #       f'the user prefers manual input enter them in dt,tc format otherwise just enter.')
     # if bool(steps):
@@ -573,11 +680,11 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma,
     while shape != 'none':
         if shape == 'circle':
             # xc,yc,r = input('Please provide the center coordinates and the radius in xc,xy,radius format: ').split(',')
-            geometry = {'center': (float(xc), float(yc)), 'radius': float(r)}
+            geometry = {'center': (float(xc)*0.01, float(yc)*0.01), 'radius': float(r)*0.01}
         elif shape == 'rectangle':
             xi,xf,yi,yf = input('Please provide the coordinate ranges of the scatterer in '
                                 'xmin,xmax,ymin,ymax format: ').split(',')
-            geometry = { 'xi':float(xi), 'xf':float(xf), 'yi':float(yi), 'yf':float(yf) }
+            geometry = { 'xi':float(xi)*0.01, 'xf':float(xf)*0.01, 'yi':float(yi)*0.01, 'yf':float(yf)*0.01 }
         else:
             # error handling
             shape = input('Please provide the shape of the scatterer (circle or rectangle or free or none); typo: ')
@@ -597,15 +704,16 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma,
     obs_dict_tuples = {}
     for xy in observation_points_lstr:
         a,b = xy.split(',')
-        obs_dict_tuples[(float(a), float(b))] = ObservationPoint(float(a),float(b))
+        obs_dict_tuples[(float(a)*0.01, float(b)*0.01)] = ObservationPoint(float(a)*0.01,float(b)*0.01)
 
     return Lx, Ly, PW, scatter_list, obs_dict_tuples
 
 
 # sim = FDTD(*user_inputs())
 
-sim = FDTD(*testing(20.0,20.0,1,0.0000000016,'circle',10,10,3,'Drude',
+sim = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'PMC',
                     10,10,10000000,10000000000000,['8.9,10','11.1,10']))
+
 
 
 # to test the Drude implementation, copied numbers from graphene example of syllabus
@@ -618,9 +726,9 @@ sim = FDTD(*testing(20.0,20.0,1,0.0000000016,'circle',10,10,3,'Drude',
 # sim = FDTD(*testing(L_for_Thz,L_for_Thz,1,sigma_for_Thz,'circle',L_for_Thz/2,L_for_Thz/2,L_for_Thz/10,'Drude',
 #                     1,1,670000,g_for_Thz,['00,0','0,0']))
 
-# sim.debugger(show_grid=False)
+# sim.debugger(show_grid=False, field='Hz')
 # nt = (sim.Lx / 1) / (sim.dt * sim.c)
-nt = 1000
+nt = 700
 
 sim.iterate(int(nt), visu = True, saving=False)
 
@@ -701,4 +809,4 @@ def analytical_solution():
     plt.legend()
     plt.show()
 
-frequency_analysis(sim)
+# frequency_analysis(sim)
