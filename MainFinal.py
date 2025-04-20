@@ -998,8 +998,7 @@ def analytical_solution(sim_ob):
 
     
 
-#frequency_analysis(sim)
-#analytical_solution(sim_ob=sim)
+
 
 def compare_numerical_analytical(sim_object):
     for obs in sim_object.observation_points.values():
@@ -1061,7 +1060,7 @@ def compare_numerical_analytical(sim_object):
         plt.tight_layout()
         plt.show()
 
-#compare_numerical_analytical(sim)
+
 
 
 
@@ -1071,3 +1070,11 @@ def compare_numerical_analytical(sim_object):
 Lx, Ly, PW, scatter_list, obs_dict_tuples, nt = Run()
 sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
 sim.iterate(int(nt), visu = True, just1D=False, saving=False)
+
+#sim1 = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
+                    #10,10,10000000,10000000000000,['6,10','14,10']))2          These worked with an older version of the code , amount of timesteps was 1400 and the wave moved in the positive x direction
+#
+#frequency_analysis(sim1)
+#analytical_solution(sim_ob=sim1)
+#frequency_analysis(sim1)
+#analytical_solution(sim_ob=sim1)
