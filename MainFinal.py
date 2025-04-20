@@ -555,6 +555,8 @@ class FDTD:
     def iterate(self,nt, visu=True,saving = False, just1D = False):
 
         fig, ax = plt.subplots()
+        ax.set_xlabel('(m)')
+        ax.set_ylabel('(m)')
 
         ax.invert_yaxis()
         plt.axis('equal')
@@ -594,7 +596,7 @@ class FDTD:
                         ax.text(0.5, 1.05, '%d/%d' % (it, nt),
                                 size=plt.rcParams["axes.titlesize"],
                                 ha="center", transform=ax.transAxes),
-                        ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-1*self.A,vmax=1*self.A,cmap='seismic')
+                        ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-1*self.A,vmax=1*self.A,cmap='seismic',)
                     ]
 
                 for obs in sim.observation_points.values():
@@ -686,7 +688,7 @@ def UI_scatterers():
         if shape == 'circle':
             while 1:
                 try:
-                    xc,yc,r = input('\nPlease provide the center coordinates and the radius in xc,xy,radius format: \n').split(',')
+                    xc,yc,r = input('\nPlease provide the center coordinates and the radius in xc[cm],xy[cm],radius[cm] format: \n').split(',')
                     geometry = {'center': (float(xc)*0.01, float(yc)*0.01), 'radius': float(r)*0.01}
                     break
                 except ValueError:
@@ -695,7 +697,7 @@ def UI_scatterers():
             while 1:
                 try:
                     xi,xf,yi,yf = input('\nPlease provide the coordinate ranges of the scatterer in '
-                                        'xmin,xmax,ymin,ymax format:\n').split(',')
+                                        'xmin[cm],xmax[cm],ymin[cm],ymax[cm] format:\n').split(',')
                     geometry = { 'xi':float(xi)*0.01, 'xf':float(xf)*0.01, 'yi':float(yi)*0.01, 'yf':float(yf)*0.01 }
                     break
                 except ValueError:
