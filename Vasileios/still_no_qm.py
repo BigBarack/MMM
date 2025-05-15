@@ -569,7 +569,7 @@ class FDTD:
             t = (it - 1) * self.dt
 
             if not using_tqdm and ( it % max(1, nt // 20) == 0):
-                print(f'Simulating: {int(100 * it / nt)}% ({it}/{nt})')
+                print(f'Simulating: {int(100 * it / nt):3d}% ({it:{len(str(nt))}d}/{nt})')
 
 
 
