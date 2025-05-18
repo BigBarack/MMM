@@ -95,6 +95,14 @@ class FDTD:
         self.epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
         self.mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
         self.c = 100 / np.sqrt(self.mu_0 * self.epsilon_0)  # Speed of light in vacuum
+        self.h = 6.62607015e-34  # Planck's constant
+        self.hbar = self.h / (2 * np.pi)  # Reduced Planck's constant
+        self.m = 9.10938356e-31  # Electron mass
+
+        #Note TO SELF: Later maybe input the amount of charge itself
+        
+        self.q = 1.602176634e-19  # Elementary charge
+
 
         # sim area
         self.Lx = Lx * 0.01
@@ -213,7 +221,7 @@ class FDTD:
         x_centers = 0.5 * (self.x_edges[:-1] + self.x_edges[1:])
         y_centers = 0.5 * (self.y_edges[:-1] + self.y_edges[1:])
         self.Xc, self.Yc = np.meshgrid(x_centers, y_centers, indexing='xy')
-        _ , self.DY_Ex = np.meshgrid(x_centers ,self.dy_dual, indexing='xy')
+        _, self.DY_Ex = np.meshgrid(x_centers, self.dy_dual, indexing='xy')
         self.DX_Ey , _ = np.meshgrid(self.dx_dual, y_centers, indexing='xy')
         self.DX_Hz, self.DY_Hz = np.meshgrid(self.dx, self.dy, indexing='xy')
 
@@ -242,8 +250,10 @@ class FDTD:
 
         self.PS_R = np.zeros((self.Ny+4,self.Nx+4))
         self.PS_I = np.zeros((self.Ny+4,self.Nx+4)) 
+        self.PS_R[50,50] = 100
 
-
+        #initiate potential field
+        self.V = np.zeros((self.Ny+4,self.Nx+4))
         # generate mask
         self.mask_Hz = np.zeros_like(self.Hz)
         self.TFSFhup = np.zeros_like(self.Hz)
@@ -389,6 +399,37 @@ class FDTD:
                     status = 'intermediate'
         return status
     
+    def V_well(self, X, Y):
+        """
+        Creates a harmonic potential well centered at a specific point (xc, yc) with a given radius.
+        The potential increases quadratically as the distance from the center increases and updates self.V.
+
+        :param X: x-coordinate matrix (e.g., self.Xc)
+        :param Y: y-coordinate matrix (e.g., self.Yc)
+        :return: Updates self.V with the potential values for the entire grid
+        """
+        # Center of the harmonic well
+        xc, yc = self.Lx / 2 + 4, self.Ly / 2 + 4  # Centered in the simulation domain
+
+        # Radius of the harmonic well
+        radius = min(self.Lx, self.Ly) / 10  # Example: 1/10th of the smallest domain dimension
+
+        # Spring constant for the harmonic potential
+        k = 1e3  # Adjust this value as needed for the desired strength of the potential
+
+        # Calculate the squared distance from the center
+        r_squared = (X - xc) ** 2 + (Y - yc) ** 2
+
+        # Apply the harmonic potential within the circle
+        potential = np.where(r_squared <= radius ** 2, 0.5 * k * r_squared, 0)
+
+
+        # Update self.V with the calculated potential
+        self.V[2:-2, 2:-2] = potential
+
+        return potential
+
+
     def lap2d4th(self,field):
         """
         4th order laplacian in 2D
@@ -404,7 +445,7 @@ class FDTD:
             
         fieldxcomp = -field[4:, 2:-2] + 16*field[3:-1, 2:-2] - 30*field[2:-2, 2:-2] + 16*field[1:-3, 2:-2] - field[:-4, 2:-2]
         fieldycomp = -field[2:-2, 4:] + 16*field[2:-2, 3:-1] - 30*field[2:-2, 2:-2] + 16*field[2:-2, 1:-3] - field[2:-2, :-4]
-        lap = fieldxcomp[2:-2,2:-2]/(12*self.DX_Hz**2) + fieldycomp[2:-2,2:-2]/(12*self.DY_Hz**2)
+        lap = fieldxcomp/(12*self.DX_Hz**2) + fieldycomp/(12*self.DY_Hz**2)
 
             
         """
@@ -420,16 +461,33 @@ class FDTD:
         """
         because of the scheme in chapter 3 it requires us to first update the magnetic field
         """    
+        if self.there_is_PMC:
+            self.Hz[self.maskPMCz==1] = 0
+        
         self.Hz[1:-1,1:-1] += self.dt / self.mu_grid[1:-1,1:-1] * ( ((self.Ex[1:,1:-1] - self.Ex[:-1,1:-1]) / self.DY_Hz[1:-1,1:-1] ) +
-                                           (self.Ey[1:-1,:-1] - self.Ey[1:-1,1:]) / self.DX_Hz[1:-1,1:-1] ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,1:-1],self.Hz[1:-1,1:-1])
+                                (self.Ey[1:-1,:-1] - self.Ey[1:-1,1:]) / self.DX_Hz[1:-1,1:-1] ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,1:-1],self.Hz[1:-1,1:-1])
 
         
+        Ex_interpolate = 0.5 * (self.Ex[1:, :] + self.Ex[:-1, :])
+        Ey_interpolate = 0.5 * (self.Ey[:, 1:] + self.Ey[:, :-1])
+        # now update the Wave fields
+        
+        self.PS_R[3:-3, 3:-3] += -self.hbar * self.dt / (2 * self.m) * self.lap2d4th(self.PS_I)[1:-1,1:-1] \
+                     - self.dt / (self.hbar) * (self.q * (self.Xc[1:-1, 1:-1] * self.Ex[:-1, 1:-1] + self.Yc[1:-1, 1:-1] * self.Ey[1:-1, :-1])-self.V[3:-3,3:-3]) * self.PS_I[3:-3, 3:-3]  # the interpolation can be used as an idea since i dont know where the E-field values are stored
+        self.PS_I[3:-3, 3:-3] += -self.hbar * self.dt / (2 * self.m) * self.lap2d4th(self.PS_R)[1:-1, 1:-1] \
+                     - self.dt / (self.hbar) * (self.q * (self.Xc[1:-1, 1:-1] * Ex_interpolate[:, 1:-1] + self.Yc[1:-1, 1:-1] * Ey_interpolate[1:-1, :])-self.V[3:-3,3:-3]) * self.PS_R[3:-3, 3:-3]  # also it right now Ex field is in n grid while it should be n+1/2
+
+        # Note THERE NO BOUNDARY CONDITIONS FOR THE WAVE FUNCTION
+        # Note No potential Added still a freely propagating wave
 
         # Ex & Ey updates
         # self.Ex += self.dt / self.epsilon_0 * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex     # no spatial averaging
         # self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex    # no PML
+
+        self.Jcx = self.Nx * self.q * self.hbar / (self.m * self.DY_Ex[:,:])*(self.PS_R[2:-2, 2:-2]*self.PS_I[3:-1, 2:-2]-self.PS_R[3:-1, 2:-2]*self.PS_I[2:-2,2:-2])[:-1,:]  # DONT FORGET NEED TO ADJUST FOR TIME DOMAIN
+        self.Jcy = self.Ny * self.q * self.hbar / (self.m * self.DX_Ey[:,:])*(self.PS_R[2:-2, 2:-2]*self.PS_I[2:-2, 3:-1]-self.PS_R[2:-2, 3:-1]*self.PS_I[2:-2,2:-2])[:,:-1]   # DONT FORGET NEED TO ADJUST FOR TIME DOMAIN
         self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex - (
-                    self.dt / self.epsilon_0) * np.multiply(self.PML_ExMask, self.Ex)
+                self.dt / self.epsilon_0) * np.multiply(self.PML_ExMask, self.Ex)
 
         # self.Ey += self.dt / self.epsilon_0 * (self.Hz[:,:-1] - self.Hz[:,1:]) / self.DX_Ey
         # self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey    # no PML
@@ -473,9 +531,7 @@ class FDTD:
 
 
 
-        # Hz updates
-        self.Hz[1:-1,1:-1] += self.dt / self.mu_grid[1:-1,1:-1] * ( ((self.Ex[1:,1:-1] - self.Ex[:-1,1:-1]) / self.DY_Hz[1:-1,1:-1] ) +
-                                           (self.Ey[1:-1,:-1] - self.Ey[1:-1,1:]) / self.DX_Hz[1:-1,1:-1] ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,1:-1],self.Hz[1:-1,1:-1])
+       
 
         if self.there_is_PMC:
             self.Hz[self.maskPMCz==1] = 0
@@ -632,7 +688,7 @@ class FDTD:
             self.update()  # Propagate over one time step
 
             if visu:
-                if  just1D:
+                if just1D:
                     artists = [
                         ax.plot(np.arange(0, len(self.Hz_1D)), self.Hz_1D, color='r', label='Hz_1D')[0],
                         ax.plot(np.arange(0, len(self.E_inc)), self.E_inc, color='b', label='E_inc')[0],
@@ -640,14 +696,27 @@ class FDTD:
                                 size=plt.rcParams["axes.titlesize"],
                                 ha="center", transform=ax.transAxes)
                     ]
+                    ax.legend()  # Add a legend for clarity
                 else:
                     artists = [
                         ax.text(0.5, 1.05, '%d/%d' % (it, nt),
                                 size=plt.rcParams["axes.titlesize"],
                                 ha="center", transform=ax.transAxes),
+                        #ax.pcolormesh(self.x_edges, self.y_edges, self.Hz, vmin=-1 * self.A, vmax=1 * self.A, cmap='seismic'),
+                        ax.pcolormesh(self.x_edges, self.y_edges, np.sqrt(self.PS_R[2:-2, 2:-2]**2 + self.PS_I[2:-2, 2:-2]**2),
+                                      cmap='viridis', alpha=0.6, label='Electron Wave Magnitude')
+                    ]
+                    ax.legend()  # Add a legend for clarity
+                """    
+                else:
+                    artists = [
+                        ax.text(0.5, 1.05, '%d/%d' % (it, nt),
+                            
+                                size=plt.rcParams["axes.titlesize"],
+                                ha="center", transform=ax.transAxes),
                         ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-1*self.A,vmax=1*self.A,cmap='seismic',)
                     ]
-
+                """
                 for obs in sim.observation_points.values():
                     artists.append(ax.plot(obs.x, obs.y, 'ko', fillstyle="none")[0])
                 if self.there_is_PMC:
@@ -1118,9 +1187,12 @@ def compare_numerical_analytical(sim_object):
 #                    10,10,10000000,10000000000000,['6,10','14,10']))
 Lx, Ly, PW, scatter_list, obs_dict_tuples, nt = Run()
 sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
+print(np.shape(sim.dt))
+sim.V_well(5,5)
 sim.iterate(int(nt), visu = True, just1D=False, saving=False)
 
-#sim1 = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
+
+
                     #10,10,10000000,10000000000000,['6,10','14,10']))2          These worked with an older version of the code , amount of timesteps was 1400 and the wave moved in the positive x direction
 #
 #frequency_analysis(sim1)
