@@ -18,7 +18,14 @@ except ImportError:
     def tqdm(iterable, **kwargs):
         return iterable
 
-
+epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
+mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
+c = 1 / np.sqrt(mu_0 * epsilon_0)
+q = -1.602176634e-19
+h = 6.6260701510-34
+hbar = h/(2*np.pi)# constantsm
+m_e = 9.10938356e-31  # Electron mass
+q_e = 1.602176634e-19 # Electron charge
 
 
 def clear():
@@ -101,15 +108,6 @@ class Scatterer:
 
 class FDTD:
     def __init__(self, Lx:float , Ly:float , PW:dict , scatterer_list:list , observation_points:dict ):
-
-        # constants
-        self.epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
-        self.mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
-        self.c = 1 / np.sqrt(self.mu_0 * self.epsilon_0)  # Speed of light in vacuum
-        self.h = 6.62607015e-34  # Planck's constant
-        self.hbar = self.h / (2 * np.pi)  # Reduced Planck's constant
-        self.m_e = 9.10938356e-31  # Electron mass
-        self.q_e = 1.602176634e-19 # Electron charge
         # sim area
         self.Lx = Lx * 0.01
         self.Ly = Ly * 0.01
@@ -252,6 +250,7 @@ class FDTD:
         if self.there_is_qm:
             self.psi_r = np.zeros_like(self.Hz)
             self.psi_i = np.zeros_like(self.Hz)
+            self.psi_i_old = np.zeros_like(self.Hz)
             self.Jqx = np.zeros_like(self.Ex)
             self.Jqy = np.zeros_like(self.Ey)
             self.V = np.zeros_like(self.Hz)
@@ -437,11 +436,14 @@ class FDTD:
         # self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex    # no PML
         self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex - (
                     self.dt / self.epsilon_0) * np.multiply(self.PML_ExMask, self.Ex)
+                    # - self.dt / self.epsilon_yavg * self.Jqx[:,:]                                 # masking j-term is not necessary as long as psi is masked (dirichlet-BC)
+
 
         # self.Ey += self.dt / self.epsilon_0 * (self.Hz[:,:-1] - self.Hz[:,1:]) / self.DX_Ey
         # self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey    # no PML
         self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey - (
                     self.dt / self.epsilon_0) * np.multiply(self.PML_EyMask, self.Ey)
+                    # - self.dt / self.epsilon_yavg * self.Jqy[:,:]                                 # masking j-term is not necessary as long as psi is masked (dirichlet-BC)
 
         if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
             for scatterer in self.scatterer_list:
@@ -519,6 +521,18 @@ class FDTD:
             self.Hz[self.TFSFhup == 1] -= self.dt / (self.mu_0 * self.DY_Hz[self.TFSFhup == 1]) * self.E_inc[-1]
         # for +-x, Ex_inc = 0 so top bottom dont get changed, for +-y Ey_inc = 0
 
+
+        # Update equations for Psi
+
+
+
+        # Calculate Jx and Jy
+        N = 1 # particles per meter (along Z-axis)
+        self.Jqx = N*q*hbar/(2*m_e) * (self.psi_r[:-1,:](self.psi_i[1:,:]+self.psi_i_old[1:,:])-self.psi_r[1:,:](self.psi_i[:-1,:]+self.psi_i_old[:-1,:]))
+        self.Jqy = N*q*hbar/(2*m_e) * (self.psi_r[:,:-1](self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:](self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
+
+
+        # 
         self.update_observation_points()
 
     def source_pw(self, time):
@@ -977,9 +991,6 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, 
     # Lx, Ly = map(float,input('Please provide the lengths Lx [cm] and Ly [cm] in Lx,Ly format: ').split(','))
     # 2. PW parameters
     # A, s_pulse = map(float,input('Please provide the amplitude A of the source and the pulse width sigma in A,sigma format').split(','))
-    epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
-    mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
-    c = 1 / np.sqrt(mu_0 * epsilon_0)
     l_min = 2 * np.pi * c * s_pulse / 3 # could also try / 5; w_max = 5 / s_pulse
     dx_min = l_min / 20
     CFL = 1
