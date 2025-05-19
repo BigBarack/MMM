@@ -651,6 +651,8 @@ class FDTD:
                     artists.append(ax.contourf(self.x_edges[:-1],self.y_edges[:-1],self.maskPMCz,cmap=binary_alpha,vmin=0,vmax=1))
                 if self.there_is_PEC:
                     artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskPECy,cmap=binary_alpha,vmin=0,vmax=1))
+                if self.there_is_qm:
+                    artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=5))
                 movie.append(artists)
         print('Iterations done')
         if visu:
@@ -912,26 +914,27 @@ def Run():
                 "PEC circle: 1\n" \
                 "PMC circle: 2\n" \
                 "Drude circle: 3\n" \
+                "e-Well circle: 4\n" \
                 "\n" \
                 "Return: 0\n")
-                assert choice in ['0','1','2','3']
+                assert choice in ['0','1','2','3','4']
                 break
             except AssertionError:
                 print("Please make a valid choice!\n")
         if choice == '1':
-            return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'PEC',
-                    10,10,10000000,10000000000000,['8.9,10','11.1,10'])
+            return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'PEC')
         elif choice == '2':
-            return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'PMC',
-                    10,10,10000000,10000000000000,['8.9,10','11.1,10'])
+            return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'PMC')
         elif choice == '3':
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
-                    10,10,10000000,10000000000000,['8.9,10','11.1,10'])
+                    10,10,10000000,10000000000000)
+        elif choice == '4':
+            return testing(20.0,20.0,1,0.000000000014,'circle',10,10,2,'e', m_eff=0.0, omega=0.0)
         elif choice == '0':
             return Run()
 
 
-def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma, gamma, observation_points_lstr):
+def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['8.9,10','11.1,10'], m_eff=0.0, omega=0.0):
     # 1. size of sim area
     # Lx, Ly = map(float,input('Please provide the lengths Lx [cm] and Ly [cm] in Lx,Ly format: ').split(','))
     # 2. PW parameters
@@ -971,6 +974,8 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma,
         if material == 'Drude':
             # e_r,m_r, sigma, gamma  = input('Please provide the material properties in relative permittivity,relative permeability,sigma_DC,gamma format: ').split(',')
             properties = { 'e_r' : float(e_r) , 'm_r' : float(m_r), 'sigma_DC' : float(sigma) , 'gamma' : float(gamma)}
+        elif material == 'e':
+            properties = { 'm_eff' : float(m_eff) , 'omega' : float(omega)}
         else:
             properties = {}
         counter += 1
