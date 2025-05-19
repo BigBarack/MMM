@@ -1,24 +1,3 @@
-"""
-TODO - MMM.p1
-
-- polish:
-	= comments & style & inputs & error checking for inputs
-- PEC/PMC scatterers:
-	= write out the boundary conditions for those scatterers, relatively the simplest
-- change scale:
-	= change from cm to mm or smaller, correct c and other dependent parts
-- free-shape scatterers:
-	= how..
-- offer materials for scatterers (examples of graphene etc)
-
-- maybe add Mur's ABC in 1d ADE of TFSF
-
-- add other PW directions
-
-- PML :(
-
-- validation using analytical & FFT
-"""
 import numpy as np
 from os import system, name
 import matplotlib.pyplot as plt
@@ -30,7 +9,27 @@ from scipy.special import hankel2
 from scipy.special import jv
 from scipy import ndimage
 
+try:
+    from tqdm import tqdm
+    using_tqdm = True
+except ImportError:
+    using_tqdm = False
+    # fallback: basic wrapper that does nothing, tqdm was not working in my powershell, not needed to pip install
+    def tqdm(iterable, **kwargs):
+        return iterable
 
+
+
+
+def clear():
+
+    # for windows
+    if name == 'nt':
+        _ = system('cls')
+
+    # for mac and linux(here, os.name is 'posix')
+    else:
+        _ = system('clear')
 
 def cross_average2Drray(arr):
     """
@@ -61,7 +60,6 @@ class ObservationPoint:
 
 
 class Scatterer:
-
     def __init__(self , shape:str , material:str , ID:int , geometry:dict , properties:dict ):
         self.shape = shape
         self.ID = ID                    #useful for up-eq and mask
@@ -102,14 +100,16 @@ class Scatterer:
 
 
 class FDTD:
-
     def __init__(self, Lx:float , Ly:float , PW:dict , scatterer_list:list , observation_points:dict ):
 
         # constants
         self.epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
         self.mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
-        self.c = 100 / np.sqrt(self.mu_0 * self.epsilon_0)  # Speed of light in vacuum
-
+        self.c = 1 / np.sqrt(self.mu_0 * self.epsilon_0)  # Speed of light in vacuum
+        self.h = 6.62607015e-34  # Planck's constant
+        self.hbar = self.h / (2 * np.pi)  # Reduced Planck's constant
+        self.m_e = 9.10938356e-31  # Electron mass
+        self.q_e = 1.602176634e-19 # Electron charge
         # sim area
         self.Lx = Lx * 0.01
         self.Ly = Ly * 0.01
@@ -121,6 +121,9 @@ class FDTD:
         self.A = PW['A']
         self.s_pulse = PW['s_pulse']
         self.direction = PW['direction']    # +x -x +y -y
+        self.PW_type = PW['PW_type']
+        if self.PW_type == 'sinusoidal':
+            self.fc = PW['fc']
 
         # gridding
         self.dx_coarse = self.lmin / 10
@@ -132,6 +135,7 @@ class FDTD:
         self.there_is_Drude = any([ scat.material == 'Drude' for scat in scatterer_list])
         self.there_is_PEC = any([scat.material == 'PEC' for scat in scatterer_list])
         self.there_is_PMC = any([scat.material == 'PMC' for scat in scatterer_list])
+        self.there_is_qm = any([scat.material == 'e' for scat in scatterer_list])
 
         # PML
         self.PML_n = 15
@@ -139,7 +143,7 @@ class FDTD:
         self.PML_KappaMax = 1.0
         self.PML_SigmaMax = (self.PML_m + 1) / (150 * np.pi)
 
-
+        # Generate coefficients for the PML
         def sigma_e(self, i):
             return self.PML_SigmaMax * (i / self.PML_n) ** self.PML_m
 
@@ -195,6 +199,7 @@ class FDTD:
         self.dx = np.abs(np.diff(x))  # dx[i] = x[i+1] - x[i]
         self.dx_dual = 0.5 * (self.dx[:-1] + self.dx[1:])
 
+        # refine grid
         y = [0.0]
         y0 = 0.0  # running cursor
         entering = True
@@ -233,15 +238,25 @@ class FDTD:
         # initialize fields
         self.Hz = np.zeros_like(self.Xc)
         self.Ny, self.Nx = self.Hz.shape
-        print(f"Ny:{self.Ny}, Nx:{self.Nx}")                                      # debugger
         self.Ex = np.zeros((self.Ny-1,self.Nx))
         self.Ey = np.zeros((self.Ny, self.Nx-1))
         self.epsilon_grid = np.full(self.Hz.shape,self.epsilon_0)
         self.epsilon_yavg = np.zeros_like(self.Ex)                 #epsilon spatially averaged over y, used for Ex update
         self.epsilon_xavg = np.zeros_like(self.Ey)                 #epsilon spatially averaged over x, used for Ey update
         self.mu_grid = np.full(self.Hz.shape, self.mu_0)
-        self.Jcx = np.zeros_like(self.Ex)
-        self.Jcy = np.zeros_like(self.Ey)
+        if self.there_is_Drude:
+            self.Jcx = np.zeros_like(self.Ex)
+            self.Jcy = np.zeros_like(self.Ey)
+
+        # initialize quantum fields
+        if self.there_is_qm:
+            self.psi_r = np.zeros_like(self.Hz)
+            self.psi_i = np.zeros_like(self.Hz)
+            self.Jqx = np.zeros_like(self.Ex)
+            self.Jqy = np.zeros_like(self.Ey)
+            self.V = np.zeros_like(self.Hz)
+            self.maskQM_Ex = np.zeros_like(self.Ex)
+            self.maskQM_Ey = np.zeros_like(self.Ey)
 
         # generate mask
         self.mask_Hz = np.zeros_like(self.Hz)
@@ -276,7 +291,7 @@ class FDTD:
             self.mask_Ey[inside_y] = scatterer.ID
 
         if self.there_is_PEC:
-            print('PEC found')              # debugger
+            # print('PEC found')              # debugger
             for scatterer in self.scatterer_list:   #locate all the PECs
                 if scatterer.material == 'PEC':
                     self.maskPECx[self.mask_Ex == scatterer.ID] = 1
@@ -306,6 +321,18 @@ class FDTD:
             self.maskPMCy[1:,:] = (surfy[1:, :].astype(bool) & bulky[:-1,:].astype(bool)).astype(int)
             self.maskPMCy[:-1, :] = (self.maskPMCy[:-1, :].astype(bool) | (
                         surfy[:-1, :].astype(bool) & bulky[1:, :].astype(bool))).astype(int)
+
+        if self.there_is_qm:
+            for scatterer in self.scatterer_list:   #locate all electron wells
+                if scatterer.material == 'e':
+                    self.maskQM_Ex[self.mask_Ex == scatterer.ID] = 1    #to be used for backwards coupling
+                    self.maskQM_Ey[self.mask_Ey == scatterer.ID] = 1
+                    # create potential
+                    xc, yc = scatterer.geometry['center']
+                    r = scatterer.geometry['radius']
+                    m_eff = scatterer.properties['m_eff']
+                    omega = scatterer.properties['omega']
+                    self.get_V(xc,yc,r, m_eff, omega) # create each potential well
 
 
 
@@ -349,8 +376,12 @@ class FDTD:
         self.auxdual = 0.5 * (self.aux1Dgrid[:-1] + self.aux1Dgrid[1:])
         self.Hz_1D = np.zeros_like(self.aux1Dgrid)    #in update we dont touch [0], source there
         self.E_inc = np.zeros_like(self.auxdual)
-        self.auxbc1 = 0
-        self.auxbc2 = 0
+        self.auxbc1 = 0                                # stores field value of neighbour in previous time for 1D ADE BC
+
+        if self.direction == '+x' or self.direction == '-y':
+            self.auxbc2 = (self.dt * self.c - self.auxdual[-1]) / (self.dt * self.c + self.auxdual[-1])
+        elif self.direction == '-x' or self.direction == '+y':
+            self.auxbc2 = (self.dt * self.c - self.auxdual[0]) / (self.dt * self.c + self.auxdual[0])
 
         # observation points located in respective fields
         for obs in self.observation_points.values():
@@ -387,6 +418,17 @@ class FDTD:
                 else:
                     status = 'intermediate'
         return status
+
+    def get_V(self,xc,yc,r,m,w):
+        # for given x,y point and radius r, create parabollic profile for 2D potential,
+        # use effective mass and angular frequency of given well
+        # update self.V using mask
+        x_rel = self.Xc - xc
+        y_rel = self.Yc - yc
+        mask = (x_rel**2 + y_rel**2) <= r**2    #boolean shape like Hz,V etc, shows were the potential well is
+        potential = 0.5 * m * w**2 * (x_rel**2 + y_rel**2)
+        self.V[mask] = potential[mask]
+
 
     def update(self):
 
@@ -429,8 +471,8 @@ class FDTD:
             self.Ex[self.TFSFedown == 1] += self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
             self.Ex[self.TFSFeup == 1] -= self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
         else:
-            print(f'Ey_left {self.Ey[self.TFSFeleft==1].shape} , Hz{self.Hz_1D[2:-2].shape} , {self.aux1Dgrid.shape}')
-            print(self.Hz_1D.shape)
+            # print(f'Ey_left {self.Ey[self.TFSFeleft==1].shape} , Hz{self.Hz_1D[2:-2].shape} , {self.aux1Dgrid.shape}')
+            # print(self.Hz_1D.shape)
             self.Ex[self.TFSFedown==1] += self.dt * self.Hz_1D[1] / (self.epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
             self.Ex[self.TFSFeup ==1] -= self.dt * self.Hz_1D[-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
             self.Ey[self.TFSFeleft==1] += self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeleft==1])
@@ -481,45 +523,32 @@ class FDTD:
 
     def source_pw(self, time):
         """
-        can generalize with a logic to figure out diagonal gridding later
         call before each update to calculate the incident components needed for TFST
         :param time:  time to update source cell
         :return:
         """
+        if self.PW_type == 'gaussian':
+            source_term = self.A * np.exp(-(time - self.tc)**2 / (2 * self.s_pulse**2))
+        elif self.PW_type == 'sinusoidal':
+            source_term = self.A * np.exp(-(time - self.tc) ** 2 / (2 * self.s_pulse ** 2)) * np.sin(2 * np.pi * self.fc * time)
         if self.direction == '+x' or self.direction == '-y':
-            self.Hz_1D[0] = self.A * np.exp(-(time - self.tc)**2 / (2 * self.s_pulse**2))
-            self.auxbc1 = self.Hz_1D[-2]
+            self.Hz_1D[0] = source_term
+            self.auxbc1 = self.Hz_1D[-2]     #storing value of neighbour before updating
             #update
             self.E_inc += self.dt * (self.Hz_1D[:-1] - self.Hz_1D[1:]) / (self.epsilon_0 * self.auxdual)
             self.Hz_1D[1:-1] += self.dt * (self.E_inc[:-1] - self.E_inc[1:]) / (self.mu_0 * self.aux1Dgrid[1:-1])
             # 1d ABC
-            self.Hz_1D[-1] = self.auxbc2
-            self.auxbc2 = self.auxbc1
-            self.auxbc1 = self.Hz_1D[-2]
-            # 1d abc    tried from another book
-            # self.Hz_1D[-1] = self.auxbc1 + (self.c * self.dt - self.aux1Dgrid[-1]) / (self.c * self.dt + self.aux1Dgrid[-1]) * (self.Hz_1D[-2] - self.Hz_1D[-1])
-            # 1d abc different again, other source
-            # coef = (self.c * self.dt - self.aux1Dgrid[-1]) / (self.c * self.dt + self.aux1Dgrid[-1])
-            # self.Hz_1D[-1] = self.Hz_1D[-2] + coef * (self.Hz_1D[-1] - self.Hz_1D[-2])
-            # 1d abc analytical
-            # distance_from_source = sum(self.auxdualthe)
-            # time_delay = distance_from_source / self.c
-            # delayed_t = time - time_delay
-            # print (f'time {time}, delayed_time {delayed_t}, {delayed_t}, distance {distance_from_source}')    # debugger
-            # if delayed_t > 0:   #arrived
-            #     self.Hz_1D[-1] = self.A * np.exp(-(delayed_t - self.tc) ** 2 / (2 * self.s_pulse ** 2))
-            # else:   #not arrived yet
-            #     self.Hz_1D[-1]=0
+            self.Hz_1D[-1] = self.auxbc1 + self.auxbc2 * ( self.Hz_1D[-2] - self.Hz_1D[-1] )
 
         elif self.direction == '-x' or self.direction == '+y':
-            self.Hz_1D[-1] = self.A * np.exp(-(time - self.tc) ** 2 / (2 * self.s_pulse ** 2))
+            self.Hz_1D[-1] = source_term
+            self.auxbc1 = self.Hz_1D[1]     #storing value of neighbour before updating
             # update
             self.E_inc += self.dt * (self.Hz_1D[:-1] - self.Hz_1D[1:]) / (self.epsilon_0 * self.auxdual)
             self.Hz_1D[1:-1] += self.dt * (self.E_inc[:-1] - self.E_inc[1:]) / (self.mu_0 * self.aux1Dgrid[1:-1])
             # 1d ABC
-            self.Hz_1D[0] = self.auxbc2
-            self.auxbc2 = self.auxbc1
-            self.auxbc1 = self.Hz_1D[1]
+            self.Hz_1D[0] = self.auxbc1 + self.auxbc2 * (self.Hz_1D[1] - self.Hz_1D[0])
+
         # self.Hz_1D[0] = self.A * np.exp(-(time - self.tc) ** 2 / (2 * self.s_pulse ** 2)) * np.sin(time * 2 * np.pi * self.fc)    <-- change source type?
 
     def update_observation_points(self):
@@ -569,9 +598,9 @@ class FDTD:
 
     def iterate(self,nt, visu=True,saving = False, just1D = False):
 
-        # timeseries = np.zeros((nt,))   # may be used in the future if PW implementation changes
-
         fig, ax = plt.subplots()
+        ax.set_xlabel('(m)')
+        ax.set_ylabel('(m)')
 
         ax.invert_yaxis()
         plt.axis('equal')
@@ -581,10 +610,13 @@ class FDTD:
         binary[:, -1] = alphas 
         binary_alpha = ListedColormap(binary)
 
-        for it in range(0,nt):
+        for it in tqdm(range(0,nt), desc='Simulating'):
             t = (it - 1) * self.dt
-            # timeseries[it,] = t        # DELETE?
-            print('%d/%d' % (it, nt))  # Loading bar while sim is running
+
+            if not using_tqdm and ( it % max(1, nt // 20) == 0):
+                print(f'Simulating: {int(100 * it / nt):3d}% ({it:{len(str(nt))}d}/{nt})')
+
+
 
             # hard point source used before PW was implemented
 
@@ -610,7 +642,7 @@ class FDTD:
                         ax.text(0.5, 1.05, '%d/%d' % (it, nt),
                                 size=plt.rcParams["axes.titlesize"],
                                 ha="center", transform=ax.transAxes),
-                        ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-1*self.A,vmax=1*self.A,cmap='seismic')
+                        ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-1*self.A,vmax=1*self.A,cmap='seismic',)
                     ]
 
                 for obs in sim.observation_points.values():
@@ -620,7 +652,7 @@ class FDTD:
                 if self.there_is_PEC:
                     artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskPECy,cmap=binary_alpha,vmin=0,vmax=1))
                 movie.append(artists)
-        print('iterations done')
+        print('Iterations done')
         if visu:
             my_anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000,
                                       blit=True)
@@ -629,15 +661,6 @@ class FDTD:
             plt.show()
 
 
-def clear():
-
-    # for windows
-    if name == 'nt':
-        _ = system('cls')
-
-    # for mac and linux(here, os.name is 'posix')
-    else:
-        _ = system('clear')
 
 def UI_Size():
     #1. size of sim area
@@ -654,14 +677,38 @@ def UI_PW():
     # 2. PW parameters
     while 1:
         try:
-            A, s_pulse = map(float,input('\nPlease provide the amplitude A of the source and the pulse width sigma in A,sigma format\n').split(','))
+            A, s_pulse = map(float,input('\nPlease provide the amplitude A of the source and the pulse width sigma in A,sigma format:\n').split(','))
             break
         except ValueError:
             print("Please insert 2 valid values!")
+    while 1:
+        try:
+            source_choice = input("Please choose the source type:\n" \
+            "Gaussian pulse: 1\n" \
+            "Gaussian-modulated sinusoidal radio-frequency (RF) pulse: 2\n\n")
+            assert source_choice in ['1','2']
+            break
+        except AssertionError:
+            print("Please make a valid choice!\n")
+    if source_choice == '1':
+        PW_type = 'gaussian'
+    elif source_choice == '2':
+        PW_type = 'sinusoidal'
+        while 1:
+            try:
+                fc = float(input('Please provide the central frequency fc [Hz]:\n'))
+                break
+            except ValueError:
+                print('Please enter a valid frequency (float)')
     epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
     mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
     c = 1 / np.sqrt(mu_0 * epsilon_0)
-    l_min = 2 * np.pi * c * s_pulse / 3 # could also try / 5; w_max = 5 / s_pulse
+    if PW_type == 'gaussian':
+        l_min = 2 * np.pi * c * s_pulse / 3 # could also try / 5; w_max = 5 / s_pulse
+    else:
+        bandwidth = 0.44 / s_pulse
+        f_max = fc + bandwidth / 2
+        l_min = c / f_max
     dx_min = l_min / 20
     CFL = 1
     dt = CFL / ( c * np.sqrt((1 / dx_min ** 2) + (1 / dx_min ** 2)))   # time step from spatial disc. & CFL
@@ -669,7 +716,7 @@ def UI_PW():
     while 1:
         try:
             print(f'\nFor the given pulse width, timestep = {dt} and central time tc = {tc} are recommended; If '
-                  f'the user prefers manual input enter them in dt,tc format otherwise just enter.')
+                  f'the user prefers manual input enter them in dt,tc format otherwise just enter.\n')
             steps = input()
             if bool(steps):
                 dt,tc = map(float,steps.split(','))
@@ -683,8 +730,17 @@ def UI_PW():
             break
         except AssertionError:
             print("Please insert a valid direction!\n")
-    PW = { 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction}
-    return(PW)
+    while 1:
+        try:
+            nt = int(input("\nPlease insert how many timesteps are needed:\n"))
+            break
+        except ValueError:
+            print("Please insert a valid amount!\n")
+
+    PW = { 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction, 'PW_type' : PW_type}
+    if PW_type == 'sinusoidal':
+        PW['fc'] = fc
+    return(PW,nt)
     
 def UI_scatterers():
     # 3. scatterers
@@ -704,7 +760,7 @@ def UI_scatterers():
         if shape == 'circle':
             while 1:
                 try:
-                    xc,yc,r = input('\nPlease provide the center coordinates and the radius in xc,xy,radius format: \n').split(',')
+                    xc,yc,r = input('\nPlease provide the center coordinates and the radius in xc[cm],xy[cm],radius[cm] format:\n').split(',')
                     geometry = {'center': (float(xc)*0.01, float(yc)*0.01), 'radius': float(r)*0.01}
                     break
                 except ValueError:
@@ -713,20 +769,19 @@ def UI_scatterers():
             while 1:
                 try:
                     xi,xf,yi,yf = input('\nPlease provide the coordinate ranges of the scatterer in '
-                                        'xmin,xmax,ymin,ymax format:\n').split(',')
+                                        'xmin[cm],xmax[cm],ymin[cm],ymax[cm] format:\n').split(',')
                     geometry = { 'xi':float(xi)*0.01, 'xf':float(xf)*0.01, 'yi':float(yi)*0.01, 'yf':float(yf)*0.01 }
                     break
                 except ValueError:
                     print("Please insert valid coordinates!\n")
 
-        # if PEC or PMC is chosen, the scatterer is inserted but treated as free space, only refinement is done
         if shape == 'none':
             break
 
         while 1:
             try:
-                material = input('\nPlease provide the type of material ( PEC / PMC / Drude ): \n')
-                assert material in ['PEC','PMC','Drude']
+                material = input('\nPlease provide the type of material ( PEC / PMC / Drude ) or e for an electron well: \n')
+                assert material in ['PEC','PMC','Drude', 'e']
                 break
             except AssertionError:
                 print("Please insert a valid material type!\n")
@@ -735,6 +790,14 @@ def UI_scatterers():
                 try:
                     e_r,m_r, sigma, gamma  = input('\nPlease provide the material properties in relative permittivity,relative permeability,sigma_DC,gamma format: \n').split(',')
                     properties = { 'e_r' : float(e_r) , 'm_r' : float(m_r), 'sigma_DC' : float(sigma) , 'gamma' : float(gamma)}
+                    break
+                except ValueError:
+                    print("Please insert valid values!\n")
+        elif material == 'e':
+            while 1:
+                try:
+                    omega, m_eff = input('\nPlease provide the angular frequency and effective mass used in the potential in omega,m format: \n').split(',')
+                    properties = { 'omega' : float(omega), 'm_eff' : float(m_eff)}
                     break
                 except ValueError:
                     print("Please insert valid values!\n")
@@ -748,7 +811,7 @@ def UI_obs():
     # 4. location(s) of observation points (x,y)
     while 1:
         try:
-            observation_points_lstr = input('\nPlease provide the observation points in x1,y1;...;xn,yn format: \n').split(';')
+            observation_points_lstr = input('\nPlease provide the observation points in x1,y1;...;xn,yn format:\n').split(';')
             obs_dict_tuples = {}
             for xy in observation_points_lstr:
                 a,b = xy.split(',')
@@ -764,7 +827,7 @@ def user_inputs():
 
     Lx,Ly = UI_Size()
         
-    PW = UI_PW()
+    PW, nt = UI_PW()
 
     scatter_list = UI_scatterers()
 
@@ -788,7 +851,7 @@ def user_inputs():
         if choice == '1':
             Lx,Ly = UI_Size()
         elif choice == '2':
-            PW = UI_PW()
+            PW, nt = UI_PW()
         elif choice == '3':
             scatter_list = UI_scatterers()
         elif choice == '4':
@@ -796,7 +859,30 @@ def user_inputs():
         elif choice == '0':
             break
 
-    return Lx, Ly, PW, scatter_list, obs_dict_tuples
+    return Lx, Ly, PW, scatter_list, obs_dict_tuples, nt
+
+def validate_inputs(Lx: float, Ly:float, PW:dict, PML_n = 15, edge_to_TFSF = 20, obs_dict= None)-> bool:
+    """
+    Validates that:
+    - domain is large enough to fit PML and TFSF region for given gridding (dependent on wavelength)
+    - all observation points lie within the domain
+
+    :return: True if valid, False if not valid
+    """
+    valid = True
+    dx_coarse = PW['lmin'] / 10
+    margins = 2 * dx_coarse * max(PML_n , edge_to_TFSF) # in meters
+    if Lx*0.01 < margins or Ly*0.01 < margins:
+        print(f"WARNING! Domain is too small ({Lx} cm x {Ly} cm).")
+        print(f"At least {margins*100} cm are needed for the UPML & TFSF implementation.")
+        valid = False
+    if obs_dict:
+        for x,y in obs_dict:
+            if not(0 <= x*100 <= Lx and 0 <= y*100 <= Ly):
+                print(f"WARNING! Observation point ({x*100},{y*100}) is outside the domain.")
+                valid = False
+    return valid
+
 
 def Run():
     choice = 0
@@ -812,8 +898,11 @@ def Run():
         except AssertionError:
             print("Please make a valid choice!\n")
     if choice == '1':
-        Lx, Ly, PW, scatterers, obs = user_inputs()
-        return Lx, Ly, PW, scatterers, obs
+        Lx, Ly, PW, scatterers, obs, nt = user_inputs()
+        if not validate_inputs(Lx=Lx, Ly=Ly, PW=PW, obs_dict=obs):
+            input("Press Enter to return to the start...")
+            return Run()
+        return Lx, Ly, PW, scatterers, obs, nt
     elif choice == '2':
         while 1:
             try:
@@ -894,7 +983,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma,
         a,b = xy.split(',')
         obs_dict_tuples[(float(a)*0.01, float(b)*0.01)] = ObservationPoint(float(a)*0.01,float(b)*0.01)
 
-    return Lx, Ly, PW, scatter_list, obs_dict_tuples
+    return Lx, Ly, PW, scatter_list, obs_dict_tuples, 700
 
 # to test the Drude implementation, copied numbers from graphene example of syllabus
 #  lamda ~ 5 micrometer -> ~ Thz freq
@@ -915,7 +1004,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma,
 def frequency_analysis(sim_object):
     fig, axis = plt.subplots(2, 1, figsize=(10, 8))
 
-    for obs in sim.observation_points.values():
+    for obs in sim_object.observation_points.values():
         # Plot the original Hz values
         axis[0].plot(range(len(obs.hz_values)), obs.hz_values, label=f"Obs ({obs.x}, {obs.y})")
 
@@ -934,7 +1023,6 @@ def frequency_analysis(sim_object):
 
     # Add labels and legend for the FFT
     axis[1].set_title("FFT of Hz Values at Observation Points")
-    axis[1].set_xlim(0, 1e9)
     axis[1].xaxis.set_major_locator(MaxNLocator(nbins=20))  # Example: 20 ticks
     axis[1].set_xlabel("Frequency (Hz)")
     axis[1].set_ylabel("Magnitude")
@@ -943,60 +1031,158 @@ def frequency_analysis(sim_object):
     plt.tight_layout()
     plt.show()
 
-def analytical_solution():
-    # Parameters
-    a = 1.0  # Radius of cylinder
-    phi = np.pi / 4  # Angle
-    rho = 2.0  # Observation point
-    A = 1  # Amplitude
+def analytical_solution(sim_ob):
+    """"
+    this is the total field solution for a plane wave incident on a circular scatterer in free space.
+    """
+    
+    for obs in sim_ob.observation_points.values():
+        #parameters
 
-    # Frequency range (wavevector k)
-    k_values = np.linspace(0.1, 10, 500)  # Avoid k=0 to prevent division by zero
-    Hz_scat_values = []
+        rho = np.sqrt(obs.x**2 + obs.y**2)   # Distance from the origin to the observation point
+        phi = np.arctan2(obs.y, obs.x)  # Angle in polar coordinates
+        
+        # Wavevector (k) based on the wavelength
 
-    # Function to compute nu(n)
-    def nu(n):
-        if n == 0:
-            return 1
-        return 2
+        k_values = np.linspace(0.1, 2*sim_ob.k, 500)  # Avoid k=0 to prevent division by zero
+        a = None
+        for scatterer in sim_ob.scatterer_list:
+            if scatterer.shape == 'circle':  # Check if the scatterer is a circle
+                a = scatterer.geometry['radius']  # Extract the radius
+                break
 
-    # Compute Hz_scat for each k
-    for k in k_values:
-        ka = k * a
-        N_max = int(np.ceil(ka + 10))  # Number of summations
-        Hz_scat = 0.0
+        if a is None:
+            raise ValueError("No circular scatterer found in the simulation.")
 
-        for n in range(0, 2 * N_max + 1):
-            an = (-1j) ** nu(n)
-            term = A * (
+
+        A= 1
+        # Parameters
+
+
+        #k_values = np.linspace(0.1, 10, 500)  # Avoid k=0 to prevent division by zero
+        Hz_scat_values = []
+        
+        # Function to compute nu(n)
+        def nu(n):
+            if n == 0:
+                return 1
+            return 2
+        
+        
+        
+        for k in k_values:
+        
+
+     
+        
+            ka = k * a
+            N_max = int(np.ceil(ka + 10))  # Number of summations
+            Hz_scat = 0.0
+
+            for n in range(0, 2 * N_max + 1):
+                an = (-1j) ** nu(n)
+                term = A * (
+                        jv(n, k * rho) - jv(n, ka) / hankel2(n, ka) * hankel2(n, k * rho)
+                ) * np.cos(n * phi)
+                termcomp = an * term
+                Hz_scat += termcomp
+
+            Hz_scat_values.append(np.abs(Hz_scat))  # Store the magnitude of Hz_scat
+
+        # Plot the results
+        figH=plt.figure(figsize=(10, 6))
+        axH = figH.add_subplot(111)  # Create an Axes object in the figure
+        axH.plot(k_values*sim_ob.c, Hz_scat_values, label="|Hz_scat|")  # Plot on the Axes
+        axH.set_label(f"Observation Point ({obs.x}, {obs.y})")
+        axH.set_title("Frequency Response of Hz_scat")
+        axH.set_xlabel("Wavevector k (proportional to frequency)")
+        axH.set_ylabel("|Hz_scat|")
+        axH.grid(True)
+        axH.legend()
+        plt.show()
+
+def compare_numerical_analytical(sim_object):
+    for obs in sim_object.observation_points.values():
+        # --- Numerical FFT ---
+        hz_fft = np.fft.fft(obs.hz_values)
+        freq_numerical = np.fft.fftfreq(len(obs.hz_values), d=sim_object.dt)
+        hz_fft_magnitude = np.abs(hz_fft[:len(hz_fft) // 2])
+        freq_numerical = freq_numerical[:len(freq_numerical) // 2]
+
+        # --- Analytical Hz_scat ---
+        rho = np.sqrt(obs.x**2 + obs.y**2)
+        phi = np.arctan2(obs.y, obs.x)
+
+        k_values = np.linspace(0.1, 2 * sim_object.k, 500)
+        a = None
+        for scatterer in sim_object.scatterer_list:
+            if scatterer.shape == 'circle':
+                a = scatterer.geometry['radius']
+                break
+        if a is None:
+            raise ValueError("No circular scatterer found.")
+
+        A = 1
+        def nu(n): return 1 if n == 0 else 2
+
+        Hz_scat_values = []
+        for k in k_values:
+            ka = k * a
+            N_max = int(np.ceil(ka + 10))
+            Hz_scat = 0.0
+            for n in range(0, 2 * N_max + 1):
+                an = (-1j) ** nu(n)
+                term = A * (
                     jv(n, k * rho) - jv(n, ka) / hankel2(n, ka) * hankel2(n, k * rho)
-            ) * np.cos(n * phi)
-            termcomp = an * term
-            Hz_scat += termcomp
+                ) * np.cos(n * phi)
+                Hz_scat += an * term
+            Hz_scat_values.append(np.abs(Hz_scat))
 
-        Hz_scat_values.append(np.abs(Hz_scat))  # Store the magnitude of Hz_scat
+        freq_analytical = k_values * sim_object.c  # Convert k to frequency
 
-    # Plot the results
-    plt.figure(figsize=(10, 6))
-    plt.plot(k_values, Hz_scat_values, label="|Hz_scat|")
-    plt.title("Frequency Response of Hz_scat")
-    plt.xlabel("Wavevector k (proportional to frequency)")
-    plt.ylabel("|Hz_scat|")
-    plt.grid(True)
-    plt.legend()
-    plt.show()
+        # --- Interpolation for alignment ---
+        interp_analytical = np.interp(freq_numerical, freq_analytical, Hz_scat_values)
 
-# frequency_analysis(sim)
+        difference = hz_fft_magnitude - interp_analytical
+        diff_max = np.max(np.abs(difference))
 
 
-
-
-
-
+        # --- Plot comparison ---
+        fig=plt.figure(figsize=(10, 6))
+        axc= fig.add_subplot(111)
+        axc.plot(freq_numerical, np.abs(difference), label="difference", alpha=0.7)
+        axc.set_xlim(0, np.max(freq_numerical))
+        axc.set_ylim(0, 2*diff_max) # Adjust y-axis limit for better visibility 
+        plt.title(f"Frequency Response Comparison at Observation Point ({obs.x}, {obs.y})")
+        plt.xlabel("Frequency (Hz)")
+        plt.ylabel("Magnitude")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
 
 #For testing purposes
 #sim = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
-#                    10,10,10000000,10000000000000,['8.9,10','11.1,10']))
-sim = FDTD(*Run())
-nt = 700
+#                    10,10,10000000,10000000000000,['6,10','14,10']))
+Lx, Ly, PW, scatter_list, obs_dict_tuples, nt = Run()
+sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
+
+print(f"Lx = {sim.Lx}, Ly = {sim.Ly}")
+print(f"dt = {sim.dt}, nt = {nt}")
+print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
+print(f"Grid size = {sim.Nx} x {sim.Ny}")
+
+import time
+start = time.time()
 sim.iterate(int(nt), visu = True, just1D=False, saving=False)
+end = time.time()
+print(f"Runtime: {end - start:.2f} seconds")
+
+
+#sim1 = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
+                    #10,10,10000000,10000000000000,['6,10','14,10']))2          These worked with an older version of the code , amount of timesteps was 1400 and the wave moved in the positive x direction
+#
+#frequency_analysis(sim1)
+#analytical_solution(sim_ob=sim1)
+#frequency_analysis(sim1)
+#analytical_solution(sim_ob=sim1)
