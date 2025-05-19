@@ -604,7 +604,15 @@ class FDTD:
 
         ax.invert_yaxis()
         plt.axis('equal')
+
+        Qfig, Qax = plt.subplots()
+        Qax.set_xlabel('(m)')
+        Qax.set_ylabel('(m)')
+        Qax.invert_yaxis()
+        plt.axis('equal')
+
         movie = []
+        Qmovie = []
         binary = plt.cm.binary(np.linspace(0, 1, 256))
         alphas = np.linspace(0.0, 1.0, 256)
         binary[:, -1] = alphas 
@@ -652,15 +660,45 @@ class FDTD:
                 if self.there_is_PEC:
                     artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskPECy,cmap=binary_alpha,vmin=0,vmax=1))
                 if self.there_is_qm:
+                    artists.append(Qax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=5))
                     artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=5))
+                    Qartists = [
+                        Qax.text(0.5, 1.05, '%d/%d' % (it, nt),
+                                size=plt.rcParams["axes.titlesize"],
+                                ha="center", transform=ax.transAxes),
+                        Qax.pcolormesh(self.x_edges,self.y_edges,np.sqrt(self.psi_r**2+self.psi_i**2),cmap='seismic',)
+                    ]
+                    Qmovie.append(Qartists)
                 movie.append(artists)
+
         print('Iterations done')
         if visu:
-            my_anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000,
-                                      blit=True)
+            anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
+            Qanim = ArtistAnimation(Qfig, Qmovie, interval=10, repeat_delay=1000, blit=True)
+
             if saving:
-                my_anim.save(filename='mur1_1d.gif', writer='pillow')
-            plt.show()
+                anim.save('H.gif', writer='pillow')
+                Qanim.save('Psi.gif', writer='pillow')
+            if self.there_is_qm:
+                while True:
+                    choice = input("Which animation to view? Type 'EM', 'QM' or 'exit': ")
+                    if choice == 'EM':
+                        plt.close(Qfig)
+                        anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
+                        fig.show()
+                        plt.show()
+                    elif choice == 'QM':
+                        plt.close(fig)
+                        Qanim = ArtistAnimation(Qfig, Qmovie, interval=10, repeat_delay=1000, blit=True)
+                        Qfig.show()
+                        plt.show()
+                    elif choice.lower() == 'exit':
+                        break
+            else:
+                anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
+                plt.close(Qfig)
+                fig.show()
+                plt.show()
 
 
 
