@@ -50,6 +50,28 @@ def cross_average2Drray(arr):
     cross_avg = (padded[1:-1,1:-1] + padded[:-2,1:-1] + padded[2:,1:-1] + padded[1:-1,:-2] + padded[1:-1,2:] ) / 5
     return cross_avg
 
+def field_avg(field,axis):
+    if axis=='vertical':
+        padded = np.pad(field, ((1, 1), (0, 0)))
+        avg = 0.5 * (padded[1:,:] + padded[:-1,:])
+    elif axis=='horizontal':
+        padded = np.pad(field, ((0, 0), (1, 1)))
+        avg = 0.5 * (padded[:,1:] + padded[:,:-1])
+    return avg
+
+
+
+def laplacian_2D_4o(field,d):
+    """
+    for a given field array (used on Psi), compute the discretized to fourth order laplacian, using padding=0
+    :param field: the field the laplacian acts on
+    :param d: uniform grid step
+    :return: nabla**2 of field
+    """
+    padded = np.pad(field,2,constant_values=0)
+    lap1 =  (-padded[4:,2:-2] + 16 * padded[3:-1,2:-2] - 30 * padded[2:-2,2:-2] + 16 * padded[1:-3,2:-2] - padded[:-4,2:-2]) / (12 * d**2)
+    lap2 =  (-padded[2:-2,4:] + 16 * padded[2:-2,3:-1] - 30 * padded[2:-2,2:-2] + 16 * padded[2:-2,1:-3] - padded[2:-2,:-4]) / (12 * d**2)
+    return lap1 + lap2
 
 class ObservationPoint:
     def __init__(self,x,y):
@@ -256,6 +278,7 @@ class FDTD:
             self.V = np.zeros_like(self.Hz)
             self.maskQM_Ex = np.zeros_like(self.Ex)
             self.maskQM_Ey = np.zeros_like(self.Ey)
+            self.maskQM = np.zeros_like(self.Hz)
 
         # generate mask
         self.mask_Hz = np.zeros_like(self.Hz)
@@ -326,6 +349,7 @@ class FDTD:
                 if scatterer.material == 'e':
                     self.maskQM_Ex[self.mask_Ex == scatterer.ID] = 1    #to be used for backwards coupling
                     self.maskQM_Ey[self.mask_Ey == scatterer.ID] = 1
+                    self.maskQM[self.mask_Hz == scatterer.ID] = 1
                     # create potential
                     xc, yc = scatterer.geometry['center']
                     r = scatterer.geometry['radius']
@@ -445,6 +469,10 @@ class FDTD:
                     self.dt / self.epsilon_0) * np.multiply(self.PML_EyMask, self.Ey)
                     # - self.dt / self.epsilon_yavg * self.Jqy[:,:]                                 # masking j-term is not necessary as long as psi is masked (dirichlet-BC)
 
+        if self.there_is_qm:
+            self.Ex[self.maskQM_Ex] -= self.dt * self.Jqx / self.epsilon_0
+            self.Ey[self.maskQM_Ey] -= self.dt * self.Jqy / self.epsilon_0
+
         if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
             for scatterer in self.scatterer_list:
                 if scatterer.material == 'Drude':
@@ -523,13 +551,28 @@ class FDTD:
 
 
         # Update equations for Psi
+        if self.there_is_qm:
+            ex = field_avg(self.Ex,'vertical')
+            ey = field_avg(self.Ey, 'horizontal')
 
+            self.psi_r[self.maskQM==1] -= self.dt/self.hbar *( (self.hbar**2/2*self.m_e) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM==1]
+                                                               + self.q_e * ex[self.maskQM==1] * self.Xc[self.maskQM==1] * self.psi_i[self.maskQM==1]
+                                                               + self.q_e * ey[self.maskQM==1] * self.Yc[self.maskQM==1] * self.psi_i[self.maskQM==1]
+                                                               - self.V[self.maskQM==1] * self.psi_i[self.maskQM==1] )
+
+            self.psi_i[self.maskQM==1] += self.dt/self.hbar *( (self.hbar**2/2*self.m_e) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM==1]
+                                                               + self.q_e * ex[self.maskQM==1] * self.Xc[self.maskQM==1] * self.psi_r[self.maskQM==1]
+                                                               + self.q_e * ey[self.maskQM==1] * self.Yc[self.maskQM==1] * self.psi_r[self.maskQM==1]
+                                                               - self.V[self.maskQM==1] * self.psi_r[self.maskQM==1] )
+            # here update Jq, will be used in next loop in E-update etc..
+   
 
 
         # Calculate Jx and Jy
-        N = 1 # particles per meter (along Z-axis)
-        self.Jqx = N*q*hbar/(2*m_e) * (self.psi_r[:-1,:](self.psi_i[1:,:]+self.psi_i_old[1:,:])-self.psi_r[1:,:](self.psi_i[:-1,:]+self.psi_i_old[:-1,:]))
-        self.Jqy = N*q*hbar/(2*m_e) * (self.psi_r[:,:-1](self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:](self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
+        N = 1e7 # particles per meter (along Z-axis)
+        effect_m = 0.15 # (relative) effective mass
+        self.Jqx = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:-1,:](self.psi_i[1:,:]+self.psi_i_old[1:,:])-self.psi_r[1:,:](self.psi_i[:-1,:]+self.psi_i_old[:-1,:]))
+        self.Jqy = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:,:-1](self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:](self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
 
 
         # 
@@ -624,6 +667,9 @@ class FDTD:
         Qax.set_ylabel('(m)')
         Qax.invert_yaxis()
         plt.axis('equal')
+        Qpos = []
+        Qmom = []
+        QEkin = []
 
         movie = []
         Qmovie = []
@@ -674,15 +720,20 @@ class FDTD:
                 if self.there_is_PEC:
                     artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskPECy,cmap=binary_alpha,vmin=0,vmax=1))
                 if self.there_is_qm:
+                    prob = np.sqrt(self.psi_r**2+self.psi_i**2)
                     artists.append(Qax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=5))
                     artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=5))
                     Qartists = [
                         Qax.text(0.5, 1.05, '%d/%d' % (it, nt),
                                 size=plt.rcParams["axes.titlesize"],
                                 ha="center", transform=ax.transAxes),
-                        Qax.pcolormesh(self.x_edges,self.y_edges,np.sqrt(self.psi_r**2+self.psi_i**2),cmap='seismic',)
+                        Qax.pcolormesh(self.x_edges,self.y_edges,prob,cmap='seismic',)
                     ]
                     Qmovie.append(Qartists)
+                    Qpos.append((np.average(np.multiply(self.x_edges,prob)),np.average(np.multiply(self.y_edges,prob))))
+                    Qmom.append(hbar*(np.average(np.multiply((self.psi[1:]-self.x_edges[1:])/self.dx,prob)),np.average(np.multiply((self.y_edges[1:]-self.y_edges[1:])/self.dy,prob))))
+
+                    QEkin.append(Qmom[-1][0]*Qmom[-1][1])
                 movie.append(artists)
 
         print('Iterations done')
