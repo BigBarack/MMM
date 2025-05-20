@@ -168,7 +168,7 @@ class FDTD:
             return self.PML_SigmaMax * (i / self.PML_n) ** self.PML_m
 
         def sigma_h(self, i):
-            return sigma_e(self, i) * self.mu_0 / self.epsilon_0
+            return sigma_e(self, i) * mu_0 / epsilon_0
 
         def sigmamask(self, array, axis):
             mask = np.zeros_like(array)
@@ -260,10 +260,10 @@ class FDTD:
         self.Ny, self.Nx = self.Hz.shape
         self.Ex = np.zeros((self.Ny-1,self.Nx))
         self.Ey = np.zeros((self.Ny, self.Nx-1))
-        self.epsilon_grid = np.full(self.Hz.shape,self.epsilon_0)
+        self.epsilon_grid = np.full(self.Hz.shape,epsilon_0)
         self.epsilon_yavg = np.zeros_like(self.Ex)                 #epsilon spatially averaged over y, used for Ex update
         self.epsilon_xavg = np.zeros_like(self.Ey)                 #epsilon spatially averaged over x, used for Ey update
-        self.mu_grid = np.full(self.Hz.shape, self.mu_0)
+        self.mu_grid = np.full(self.Hz.shape,mu_0)
         if self.there_is_Drude:
             self.Jcx = np.zeros_like(self.Ex)
             self.Jcy = np.zeros_like(self.Ey)
@@ -347,16 +347,16 @@ class FDTD:
         if self.there_is_qm:
             for scatterer in self.scatterer_list:   #locate all electron wells
                 if scatterer.material == 'e':
-                    self.maskQM_Ex[self.mask_Ex == scatterer.ID] = 1    #to be used for backwards coupling
-                    self.maskQM_Ey[self.mask_Ey == scatterer.ID] = 1
-                    self.maskQM[self.mask_Hz == scatterer.ID] = 1
+                    self.maskQM_Ex[self.mask_Ex == scatterer.ID] = True   #to be used for backwards coupling
+                    self.maskQM_Ey[self.mask_Ey == scatterer.ID] = True
+                    self.maskQM[self.mask_Hz == scatterer.ID] = True
                     # create potential
                     xc, yc = scatterer.geometry['center']
                     r = scatterer.geometry['radius']
-                    m_eff = scatterer.properties['m_eff']
+                    m_eff = scatterer.properties['m_eff']*m_e
                     omega = scatterer.properties['omega']
                     self.get_V(xc,yc,r, m_eff, omega) # create each potential well
-
+                    self.psi_r[81,81]=1
 
 
         for scatterer in self.scatterer_list:
@@ -402,9 +402,9 @@ class FDTD:
         self.auxbc1 = 0                                # stores field value of neighbour in previous time for 1D ADE BC
 
         if self.direction == '+x' or self.direction == '-y':
-            self.auxbc2 = (self.dt * self.c - self.auxdual[-1]) / (self.dt * self.c + self.auxdual[-1])
+            self.auxbc2 = (self.dt * c - self.auxdual[-1]) / (self.dt * c + self.auxdual[-1])
         elif self.direction == '-x' or self.direction == '+y':
-            self.auxbc2 = (self.dt * self.c - self.auxdual[0]) / (self.dt * self.c + self.auxdual[0])
+            self.auxbc2 = (self.dt * c - self.auxdual[0]) / (self.dt * c + self.auxdual[0])
 
         # observation points located in respective fields
         for obs in self.observation_points.values():
@@ -459,19 +459,21 @@ class FDTD:
         # self.Ex += self.dt / self.epsilon_0 * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex     # no spatial averaging
         # self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex    # no PML
         self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex - (
-                    self.dt / self.epsilon_0) * np.multiply(self.PML_ExMask, self.Ex)
+                    self.dt / epsilon_0) * np.multiply(self.PML_ExMask, self.Ex)
                     # - self.dt / self.epsilon_yavg * self.Jqx[:,:]                                 # masking j-term is not necessary as long as psi is masked (dirichlet-BC)
 
 
         # self.Ey += self.dt / self.epsilon_0 * (self.Hz[:,:-1] - self.Hz[:,1:]) / self.DX_Ey
         # self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey    # no PML
         self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey - (
-                    self.dt / self.epsilon_0) * np.multiply(self.PML_EyMask, self.Ey)
+                    self.dt / epsilon_0) * np.multiply(self.PML_EyMask, self.Ey)
                     # - self.dt / self.epsilon_yavg * self.Jqy[:,:]                                 # masking j-term is not necessary as long as psi is masked (dirichlet-BC)
 
         if self.there_is_qm:
-            self.Ex[self.maskQM_Ex] -= self.dt * self.Jqx / self.epsilon_0
-            self.Ey[self.maskQM_Ey] -= self.dt * self.Jqy / self.epsilon_0
+            Qmaskx = self.mask_Ex == 1
+            Qmasky = self.mask_Ey == 1
+            self.Ex[Qmaskx] -= (self.dt / epsilon_0) * self.Jqx[Qmaskx]
+            self.Ey[Qmasky] -= (self.dt / epsilon_0) * self.Jqy[np.pad(Qmaskx,((0,1),(0,0)))[:,:-1]]
 
         if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
             for scatterer in self.scatterer_list:
@@ -496,23 +498,23 @@ class FDTD:
         # TFSF
         if self.direction == '+x' or self.direction == '-x':
             # print(f'down{self.Ex[self.TFSFedown == 1].shape}, up{self.Ex[self.TFSFeup == 1].shape}' )
-            self.Ey[self.TFSFeleft == 1] += self.dt * self.Hz_1D[2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeleft == 1])
-            self.Ey[self.TFSFeright == 1] -= self.dt * self.Hz_1D[-3] / (self.epsilon_0 * self.DX_Ey[self.TFSFeright == 1])
-            self.Ex[self.TFSFedown == 1] += self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
-            self.Ex[self.TFSFeup == 1] -= self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
+            self.Ey[self.TFSFeleft == 1] += self.dt * self.Hz_1D[2] / (epsilon_0 * self.DX_Ey[self.TFSFeleft == 1])
+            self.Ey[self.TFSFeright == 1] -= self.dt * self.Hz_1D[-3] / (epsilon_0 * self.DX_Ey[self.TFSFeright == 1])
+            self.Ex[self.TFSFedown == 1] += self.dt * self.Hz_1D[2:-2] / (epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
+            self.Ex[self.TFSFeup == 1] -= self.dt * self.Hz_1D[2:-2] / (epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
         else:
             # print(f'Ey_left {self.Ey[self.TFSFeleft==1].shape} , Hz{self.Hz_1D[2:-2].shape} , {self.aux1Dgrid.shape}')
             # print(self.Hz_1D.shape)
-            self.Ex[self.TFSFedown==1] += self.dt * self.Hz_1D[1] / (self.epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
-            self.Ex[self.TFSFeup ==1] -= self.dt * self.Hz_1D[-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
-            self.Ey[self.TFSFeleft==1] += self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeleft==1])
-            self.Ey[self.TFSFeright==1] -= self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeright==1])
+            self.Ex[self.TFSFedown==1] += self.dt * self.Hz_1D[1] / (epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
+            self.Ex[self.TFSFeup ==1] -= self.dt * self.Hz_1D[-2] / (epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
+            self.Ey[self.TFSFeleft==1] += self.dt * self.Hz_1D[2:-2] / (epsilon_0 * self.DX_Ey[self.TFSFeleft==1])
+            self.Ey[self.TFSFeright==1] -= self.dt * self.Hz_1D[2:-2] / (epsilon_0 * self.DX_Ey[self.TFSFeright==1])
 
 
 
         # Hz updates
         self.Hz[1:-1,1:-1] += self.dt / self.mu_grid[1:-1,1:-1] * ( ((self.Ex[1:,1:-1] - self.Ex[:-1,1:-1]) / self.DY_Hz[1:-1,1:-1] ) +
-                                           (self.Ey[1:-1,:-1] - self.Ey[1:-1,1:]) / self.DX_Hz[1:-1,1:-1] ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,1:-1],self.Hz[1:-1,1:-1])
+                                           (self.Ey[1:-1,:-1] - self.Ey[1:-1,1:]) / self.DX_Hz[1:-1,1:-1] ) - (self.dt/mu_0) * np.multiply(self.PML_HzMask[1:-1,1:-1],self.Hz[1:-1,1:-1])
 
         if self.there_is_PMC:
             self.Hz[self.maskPMCz==1] = 0
@@ -520,59 +522,56 @@ class FDTD:
         # BC bounding box; PEC = tangential electric field set to zero
         # top BC
         self.Hz[0,1:-1] += self.dt / self.mu_crossavg[0,1:-1] * ( ((self.Ex[0,1:-1] - 0 ) / self.DY_Hz[0,1:-1] ) +
-                                           ((self.Ey[0,:-1] - self.Ey[0,1:]) / self.DX_Hz[0,1:-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,1:-1],self.Hz[0,1:-1])
+                                           ((self.Ey[0,:-1] - self.Ey[0,1:]) / self.DX_Hz[0,1:-1]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[0,1:-1],self.Hz[0,1:-1])
         # bot BC
         self.Hz[-1,1:-1] += self.dt / self.mu_crossavg[-1,1:-1] * ( ((0 - self.Ex[-1,1:-1]) / self.DY_Hz[-1,1:-1] ) +
-                                           ((self.Ey[-1,:-1] - self.Ey[-1,1:]) / self.DX_Hz[-1,1:-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,1:-1],self.Hz[-1,1:-1])
+                                           ((self.Ey[-1,:-1] - self.Ey[-1,1:]) / self.DX_Hz[-1,1:-1]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[-1,1:-1],self.Hz[-1,1:-1])
         # left BC
         self.Hz[1:-1,0] += self.dt / self.mu_crossavg[1:-1,0] * ( ((self.Ex[1:,0] - self.Ex[:-1,0]) / self.DY_Hz[1:-1,0] ) +
-                                           (( 0 - self.Ey[1:-1,0]) / self.DX_Hz[1:-1,0]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,0],self.Hz[1:-1,0])
+                                           (( 0 - self.Ey[1:-1,0]) / self.DX_Hz[1:-1,0]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[1:-1,0],self.Hz[1:-1,0])
         # right BC
         self.Hz[1:-1,-1] += self.dt / self.mu_crossavg[1:-1,-1] * ( ((self.Ex[1:,-1] - self.Ex[:-1,-1]) / self.DY_Hz[1:-1,-1] ) +
-                                           ((self.Ey[1:-1,-1] - 0 ) / self.DX_Hz[1:-1,-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,-1],self.Hz[1:-1,-1])
+                                           ((self.Ey[1:-1,-1] - 0 ) / self.DX_Hz[1:-1,-1]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[1:-1,-1],self.Hz[1:-1,-1])
         # corners topleft, topright, botleft, botright
         self.Hz[0,0] += self.dt / self.mu_crossavg[0,0] * ( ((self.Ex[0,0] - 0) / self.DY_Hz[0,0] ) +
-                                           ( 0 - self.Ey[0,0]) / self.DX_Hz[0,0] )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,0],self.Hz[0,0])
+                                           ( 0 - self.Ey[0,0]) / self.DX_Hz[0,0] )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[0,0],self.Hz[0,0])
         self.Hz[0,-1] += self.dt / self.mu_crossavg[0,-1] * ( ((self.Ex[0,-1] - 0) / self.DY_Hz[0,-1] ) +
-                                           (( self.Ey[0,-1] - 0) / self.DX_Hz[0,-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,-1],self.Hz[0,-1])
+                                           (( self.Ey[0,-1] - 0) / self.DX_Hz[0,-1]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[0,-1],self.Hz[0,-1])
         self.Hz[-1,0] += self.dt / self.mu_crossavg[-1,0] * ( (( 0 - self.Ex[-1,0]) / self.DY_Hz[-1,0] ) +
-                                           (( 0 - self.Ey[-1,0]) / self.DX_Hz[-1,0]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,0],self.Hz[-1,0])
+                                           (( 0 - self.Ey[-1,0]) / self.DX_Hz[-1,0]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[-1,0],self.Hz[-1,0])
         self.Hz[-1,-1] += self.dt / self.mu_crossavg[-1,-1] * ( (( 0 - self.Ex[-1,-1]) / self.DY_Hz[-1,-1] ) +
-                                           ((self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,-1],self.Hz[-1,-1])
+                                           ((self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[-1,-1],self.Hz[-1,-1])
 
         #for TFSF, we just += 'known' terms on the interface and right outside
         if self.direction == '+x' or self.direction == '-x':
-            self.Hz[self.TFSFhleft == 1] += self.dt / (self.mu_0 * self.DX_Hz[self.TFSFhleft == 1]) * self.E_inc[1]
-            self.Hz[self.TFSFhright == 1] -= self.dt / (self.mu_0 * self.DX_Hz[self.TFSFhright == 1]) * self.E_inc[-2]
+            self.Hz[self.TFSFhleft == 1] += self.dt / (mu_0 * self.DX_Hz[self.TFSFhleft == 1]) * self.E_inc[1]
+            self.Hz[self.TFSFhright == 1] -= self.dt / (mu_0 * self.DX_Hz[self.TFSFhright == 1]) * self.E_inc[-2]
         else:   # +y -y
-            self.Hz[self.TFSFhdown == 1] += self.dt / (self.mu_0 * self.DY_Hz[self.TFSFhdown == 1]) * self.E_inc[1]
-            self.Hz[self.TFSFhup == 1] -= self.dt / (self.mu_0 * self.DY_Hz[self.TFSFhup == 1]) * self.E_inc[-1]
+            self.Hz[self.TFSFhdown == 1] += self.dt / (mu_0 * self.DY_Hz[self.TFSFhdown == 1]) * self.E_inc[1]
+            self.Hz[self.TFSFhup == 1] -= self.dt / (mu_0 * self.DY_Hz[self.TFSFhup == 1]) * self.E_inc[-1]
         # for +-x, Ex_inc = 0 so top bottom dont get changed, for +-y Ey_inc = 0
 
+        N = 1e7 # particles per meter (along Z-axis)
+        effect_m = 0.15 # (relative) effective mass
 
         # Update equations for Psi
         if self.there_is_qm:
             ex = field_avg(self.Ex,'vertical')
             ey = field_avg(self.Ey, 'horizontal')
 
-            self.psi_r[self.maskQM==1] -= self.dt/self.hbar *( (self.hbar**2/2*self.m_e) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM==1]
-                                                               + self.q_e * ex[self.maskQM==1] * self.Xc[self.maskQM==1] * self.psi_i[self.maskQM==1]
-                                                               + self.q_e * ey[self.maskQM==1] * self.Yc[self.maskQM==1] * self.psi_i[self.maskQM==1]
+            self.psi_r[self.maskQM==1] -= self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM==1]
+                                                               + q_e * ex[self.maskQM==1] * self.Xc[self.maskQM==1] * self.psi_i[self.maskQM==1]
+                                                               + q_e * ey[self.maskQM==1] * self.Yc[self.maskQM==1] * self.psi_i[self.maskQM==1]
                                                                - self.V[self.maskQM==1] * self.psi_i[self.maskQM==1] )
 
-            self.psi_i[self.maskQM==1] += self.dt/self.hbar *( (self.hbar**2/2*self.m_e) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM==1]
-                                                               + self.q_e * ex[self.maskQM==1] * self.Xc[self.maskQM==1] * self.psi_r[self.maskQM==1]
-                                                               + self.q_e * ey[self.maskQM==1] * self.Yc[self.maskQM==1] * self.psi_r[self.maskQM==1]
+            self.psi_i[self.maskQM==1] += self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM==1]
+                                                               + q_e * ex[self.maskQM==1] * self.Xc[self.maskQM==1] * self.psi_r[self.maskQM==1]
+                                                               + q_e * ey[self.maskQM==1] * self.Yc[self.maskQM==1] * self.psi_r[self.maskQM==1]
                                                                - self.V[self.maskQM==1] * self.psi_r[self.maskQM==1] )
-            # here update Jq, will be used in next loop in E-update etc..
-   
 
-
-        # Calculate Jx and Jy
-        N = 1e7 # particles per meter (along Z-axis)
-        effect_m = 0.15 # (relative) effective mass
-        self.Jqx = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:-1,:](self.psi_i[1:,:]+self.psi_i_old[1:,:])-self.psi_r[1:,:](self.psi_i[:-1,:]+self.psi_i_old[:-1,:]))
-        self.Jqy = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:,:-1](self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:](self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
+            # Calculate Jx and Jy
+            self.Jqx = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:])-self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:]))
+            self.Jqy = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
 
 
         # 
@@ -592,8 +591,8 @@ class FDTD:
             self.Hz_1D[0] = source_term
             self.auxbc1 = self.Hz_1D[-2]     #storing value of neighbour before updating
             #update
-            self.E_inc += self.dt * (self.Hz_1D[:-1] - self.Hz_1D[1:]) / (self.epsilon_0 * self.auxdual)
-            self.Hz_1D[1:-1] += self.dt * (self.E_inc[:-1] - self.E_inc[1:]) / (self.mu_0 * self.aux1Dgrid[1:-1])
+            self.E_inc += self.dt * (self.Hz_1D[:-1] - self.Hz_1D[1:]) / (epsilon_0 * self.auxdual)
+            self.Hz_1D[1:-1] += self.dt * (self.E_inc[:-1] - self.E_inc[1:]) / (mu_0 * self.aux1Dgrid[1:-1])
             # 1d ABC
             self.Hz_1D[-1] = self.auxbc1 + self.auxbc2 * ( self.Hz_1D[-2] - self.Hz_1D[-1] )
 
@@ -601,8 +600,8 @@ class FDTD:
             self.Hz_1D[-1] = source_term
             self.auxbc1 = self.Hz_1D[1]     #storing value of neighbour before updating
             # update
-            self.E_inc += self.dt * (self.Hz_1D[:-1] - self.Hz_1D[1:]) / (self.epsilon_0 * self.auxdual)
-            self.Hz_1D[1:-1] += self.dt * (self.E_inc[:-1] - self.E_inc[1:]) / (self.mu_0 * self.aux1Dgrid[1:-1])
+            self.E_inc += self.dt * (self.Hz_1D[:-1] - self.Hz_1D[1:]) / (epsilon_0 * self.auxdual)
+            self.Hz_1D[1:-1] += self.dt * (self.E_inc[:-1] - self.E_inc[1:]) / (mu_0 * self.aux1Dgrid[1:-1])
             # 1d ABC
             self.Hz_1D[0] = self.auxbc1 + self.auxbc2 * (self.Hz_1D[1] - self.Hz_1D[0])
 
@@ -730,13 +729,13 @@ class FDTD:
                         Qax.pcolormesh(self.x_edges,self.y_edges,prob,cmap='seismic',)
                     ]
                     Qmovie.append(Qartists)
-                    Qpos.append((np.average(np.multiply(self.x_edges,prob)),np.average(np.multiply(self.y_edges,prob))))
-                    Qmom.append(hbar*(np.average(np.multiply((self.psi[1:]-self.x_edges[1:])/self.dx,prob)),np.average(np.multiply((self.y_edges[1:]-self.y_edges[1:])/self.dy,prob))))
-
-                    QEkin.append(Qmom[-1][0]*Qmom[-1][1])
+                    #Qpos.append((np.average(np.multiply(self.x_edges,prob)),np.average(np.multiply(self.y_edges,prob))))
+                    #Qmom.append(hbar*(np.average(np.multiply((self.psi[1:]-self.x_edges[1:])/self.dx,prob)),np.average(np.multiply((self.y_edges[1:]-self.y_edges[1:])/self.dy,prob))))
+                    #QEkin.append(Qmom[-1][0]*Qmom[-1][1])
                 movie.append(artists)
 
         print('Iterations done')
+        endtime = time.time()
         if visu:
             anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
             Qanim = ArtistAnimation(Qfig, Qmovie, interval=10, repeat_delay=1000, blit=True)
@@ -764,6 +763,7 @@ class FDTD:
                 plt.close(Qfig)
                 fig.show()
                 plt.show()
+        return endtime
 
 
 
@@ -1032,12 +1032,12 @@ def Run():
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     10,10,10000000,10000000000000)
         elif choice == '4':
-            return testing(20.0,20.0,1,0.000000000014,'circle',10,10,2,'e', m_eff=0.0, omega=0.0)
+            return testing(0.000005,0.000005,1,0.0000000000000000056,'circle',0.0000025,0.0000025,0.00000025,'e', rel_m_eff=0.15, omega=50e14)
         elif choice == '0':
             return Run()
 
 
-def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['8.9,10','11.1,10'], m_eff=0.0, omega=0.0):
+def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['0.0,0.0','0.0,0.0'], rel_m_eff=0.0, omega=0.0):
     # 1. size of sim area
     # Lx, Ly = map(float,input('Please provide the lengths Lx [cm] and Ly [cm] in Lx,Ly format: ').split(','))
     # 2. PW parameters
@@ -1075,7 +1075,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, 
             # e_r,m_r, sigma, gamma  = input('Please provide the material properties in relative permittivity,relative permeability,sigma_DC,gamma format: ').split(',')
             properties = { 'e_r' : float(e_r) , 'm_r' : float(m_r), 'sigma_DC' : float(sigma) , 'gamma' : float(gamma)}
         elif material == 'e':
-            properties = { 'm_eff' : float(m_eff) , 'omega' : float(omega)}
+            properties = { 'm_eff' : float(rel_m_eff) , 'omega' : float(omega)}
         else:
             properties = {}
         counter += 1
@@ -1280,8 +1280,7 @@ print(f"Grid size = {sim.Nx} x {sim.Ny}")
 
 import time
 start = time.time()
-sim.iterate(int(nt), visu = True, just1D=False, saving=False)
-end = time.time()
+end = sim.iterate(int(nt), visu = True, just1D=False, saving=False)
 print(f"Runtime: {end - start:.2f} seconds")
 
 
