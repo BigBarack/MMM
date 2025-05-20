@@ -458,9 +458,9 @@ class FDTD:
         potential = 0.5 * m * w**2 * (x_rel**2 + y_rel**2)
         self.V[mask] = potential[mask]
 
-    def init_psi(self,xc,yc,ID,m,w, n1=0, n2=0, x_shift=0,y_shift=0):
+    def init_psi(self,xc,yc,ID,m,w, n1=0, n2=0, x_shift=2,y_shift=0):
         """
-        Initializes psi for n1=n2=0 coherent state of potential
+        Initializes psi for n1=n2=0  coherent state of potential (stationary if no shift applied)
         :param xc: x of potential center
         :param yc: y of potential center
         :param ID: well ID to be used for masking
@@ -468,8 +468,9 @@ class FDTD:
         :param w: omega
         :return: updates the psi_r with local wavefunction
         """
-        print(m * w / hbar)
+
         a = np.sqrt(m * w / hbar)
+        print(f'Gaussian width sigma = {1/a}')
         x_rel = self.Xc - xc
         y_rel = self.Yc - yc
         mask = ndimage.binary_erosion(self.mask_Hz == ID)   # local e-well mask, not touching the boundary
@@ -1063,13 +1064,13 @@ def Run():
         elif choice == '3':
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     10,10,10000000,10000000000000)
-        elif choice == '4':
-            return testing(0.000005,0.000005,1,0.0000000000000000056,'circle',0.0000025,0.0000025,0.00000025,'e', rel_m_eff=0.15, omega=50e14)
+        elif choice == '4':                                                                                                                                                        #omega was 50e14
+            return testing(0.000005,0.000005,0,0.0000000000000000056,'circle',0.0000025,0.0000025,0.00000025 * 2,'e', rel_m_eff=0.15, omega= 50e14, timesteps=500)
         elif choice == '0':
             return Run()
 
 
-def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['0.0,0.0','0.0,0.0'], rel_m_eff=0.0, omega=0.0):
+def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['0.0,0.0','0.0,0.0'], rel_m_eff=0.0, omega=0.0, timesteps=700):
     # 1. size of sim area
     # Lx, Ly = map(float,input('Please provide the lengths Lx [cm] and Ly [cm] in Lx,Ly format: ').split(','))
     # 2. PW parameters
@@ -1121,7 +1122,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, 
         a,b = xy.split(',')
         obs_dict_tuples[(float(a)*0.01, float(b)*0.01)] = ObservationPoint(float(a)*0.01,float(b)*0.01)
 
-    return Lx, Ly, PW, scatter_list, obs_dict_tuples, 700
+    return Lx, Ly, PW, scatter_list, obs_dict_tuples, timesteps
 
 # to test the Drude implementation, copied numbers from graphene example of syllabus
 #  lamda ~ 5 micrometer -> ~ Thz freq
@@ -1306,15 +1307,28 @@ Lx, Ly, PW, scatter_list, obs_dict_tuples, nt = Run()
 sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
 
 print(f"Lx = {sim.Lx}, Ly = {sim.Ly}")
-print(f"dt = {sim.dt}, nt = {nt}")
+print(f"dt = {sim.dt}, nt = {nt}, dx = {sim.dx_fine}")
 print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
 print(f"Grid size = {sim.Nx} x {sim.Ny}")
+print(f"V max: {np.max(sim.V)}, T_osc: {2*np.pi / 50e14 }")
 
 import time
 start = time.time()
 end = sim.iterate(int(nt), visu = True, just1D=False, saving=False)
 print(f"Runtime: {end - start:.2f} seconds")
+def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
+    # import matplotlib.pyplot as plt
+    plt.figure(figsize=(6, 5))
+    pcm = plt.pcolormesh(Xc * 1e9, Yc * 1e9, V, shading='auto')
+    plt.colorbar(pcm, label="V [J]")
+    plt.xlabel("x [nm]")
+    plt.ylabel("y [nm]")
+    plt.title(title)
+    plt.axis('equal')
+    plt.tight_layout()
+    plt.show()
 
+# plot_potential(sim.V, sim.Xc, sim.Yc)
 
 #sim1 = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     #10,10,10000000,10000000000000,['6,10','14,10']))2          These worked with an older version of the code , amount of timesteps was 1400 and the wave moved in the positive x direction
