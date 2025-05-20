@@ -8,6 +8,8 @@ from matplotlib.ticker import MaxNLocator
 from scipy.special import hankel2
 from scipy.special import jv
 from scipy import ndimage
+# from matplotlib import use
+# use('TkAgg')
 
 try:
     from tqdm import tqdm
@@ -355,10 +357,11 @@ class FDTD:
                     m_eff = scatterer.properties['m_eff']*m_e
                     omega = scatterer.properties['omega']
                     self.get_V(xc,yc,r, m_eff, omega) # create each potential well
-                    # self.psi_r[81,81]=1
+                    # self.psi_r[81,81]=1   #was a test initialization
             self.maskQM_Ex = self.maskQM_Ex.astype(bool)
             self.maskQM_Ey = self.maskQM_Ey.astype(bool)
-            self.maskQM = self.maskQM.astype(bool)
+            # self.maskQM = self.maskQM.astype(bool)
+            self.maskQM = ndimage.binary_erosion(self.maskQM)   # not touching BC, therefore stays 0
 
         for scatterer in self.scatterer_list:
             if scatterer.material == 'Drude':
