@@ -8,6 +8,7 @@ from matplotlib.ticker import MaxNLocator
 from scipy.special import hankel2
 from scipy.special import jv
 from scipy import ndimage
+from scipy import special
 # from matplotlib import use
 # use('TkAgg')
 
@@ -23,8 +24,8 @@ except ImportError:
 epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
 mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
 c = 1 / np.sqrt(mu_0 * epsilon_0)
-h = 6.6260701510-34
-hbar = h/(2*np.pi)# constantsm
+h = 6.62607015e-34
+hbar = h/(2*np.pi)
 m_e = 9.10938356e-31  # Electron mass
 q_e = 1.602176634e-19 # Electron charge
 
@@ -357,6 +358,7 @@ class FDTD:
                     m_eff = scatterer.properties['m_eff']*m_e
                     omega = scatterer.properties['omega']
                     self.get_V(xc,yc,r, m_eff, omega) # create each potential well
+                    self.init_psi(xc,yc,scatterer.ID,m_eff,omega)
                     # self.psi_r[81,81]=1   #was a test initialization
             self.maskQM_Ex = self.maskQM_Ex.astype(bool)
             self.maskQM_Ey = self.maskQM_Ey.astype(bool)
@@ -455,6 +457,30 @@ class FDTD:
         mask = (x_rel**2 + y_rel**2) <= r**2    #boolean shape like Hz,V etc, shows were the potential well is
         potential = 0.5 * m * w**2 * (x_rel**2 + y_rel**2)
         self.V[mask] = potential[mask]
+
+    def init_psi(self,xc,yc,ID,m,w, n1=0, n2=0, x_shift=0,y_shift=0):
+        """
+        Initializes psi for n1=n2=0 coherent state of potential
+        :param xc: x of potential center
+        :param yc: y of potential center
+        :param ID: well ID to be used for masking
+        :param m: effective mass
+        :param w: omega
+        :return: updates the psi_r with local wavefunction
+        """
+        print(m * w / hbar)
+        a = np.sqrt(m * w / hbar)
+        x_rel = self.Xc - xc
+        y_rel = self.Yc - yc
+        mask = ndimage.binary_erosion(self.mask_Hz == ID)   # local e-well mask, not touching the boundary
+        hermite_term = special.hermite(n1)(a*x_rel) * special.hermite(n2)(a*y_rel)
+        psi_local = np.exp(-0.5 * a**2 * ((x_rel - (x_shift * np.sqrt(2)/a))** 2 + (y_rel - (y_shift * np.sqrt(2)/a))** 2))    # currently full grid, contains unwanted near-zero values
+        psi_local *= hermite_term
+        # normalize - instead of analytical we compute discrete integral
+        norm = np.sqrt(np.sum(psi_local[mask]**2 * self.dx_fine**2))
+        psi_local /= norm
+        self.psi_r[mask] = psi_local[mask]
+
 
 
     def update(self):
@@ -578,7 +604,7 @@ class FDTD:
             q = -q_e
             self.Jqx = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:])-self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:]))
             self.Jqy = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
-
+            self.psi_i_old = self.psi_i
 
         #
         self.update_observation_points()
