@@ -8,6 +8,9 @@ from matplotlib.ticker import MaxNLocator
 from scipy.special import hankel2
 from scipy.special import jv
 from scipy import ndimage
+from scipy import special
+# from matplotlib import use
+# use('TkAgg')
 
 try:
     from tqdm import tqdm
@@ -21,9 +24,8 @@ except ImportError:
 epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
 mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
 c = 1 / np.sqrt(mu_0 * epsilon_0)
-q = -1.602176634e-19
-h = 6.6260701510-34
-hbar = h/(2*np.pi)# constantsm
+h = 6.62607015e-34
+hbar = h/(2*np.pi)
 m_e = 9.10938356e-31  # Electron mass
 q_e = 1.602176634e-19 # Electron charge
 
@@ -347,22 +349,26 @@ class FDTD:
         if self.there_is_qm:
             for scatterer in self.scatterer_list:   #locate all electron wells
                 if scatterer.material == 'e':
-                    self.maskQM_Ex[self.mask_Ex == scatterer.ID] = True   #to be used for backwards coupling
-                    self.maskQM_Ey[self.mask_Ey == scatterer.ID] = True
-                    self.maskQM[self.mask_Hz == scatterer.ID] = True
+                    self.maskQM_Ex[self.mask_Ex == scatterer.ID] = 1   #to be used for backwards coupling
+                    self.maskQM_Ey[self.mask_Ey == scatterer.ID] = 1
+                    self.maskQM[self.mask_Hz == scatterer.ID] = 1
                     # create potential
                     xc, yc = scatterer.geometry['center']
                     r = scatterer.geometry['radius']
                     m_eff = scatterer.properties['m_eff']*m_e
                     omega = scatterer.properties['omega']
                     self.get_V(xc,yc,r, m_eff, omega) # create each potential well
-                    self.psi_r[81,81]=1
-
+                    self.init_psi(xc,yc,scatterer.ID,m_eff,omega)
+                    # self.psi_r[81,81]=1   #was a test initialization
+            self.maskQM_Ex = self.maskQM_Ex.astype(bool)
+            self.maskQM_Ey = self.maskQM_Ey.astype(bool)
+            # self.maskQM = self.maskQM.astype(bool)
+            self.maskQM = ndimage.binary_erosion(self.maskQM)   # not touching BC, therefore stays 0
 
         for scatterer in self.scatterer_list:
             if scatterer.material == 'Drude':
-                self.epsilon_grid[self.mask_Hz == scatterer.ID] = scatterer.properties['e_r'] * self.epsilon_0
-                self.mu_grid[self.mask_Hz == scatterer.ID] = scatterer.properties['m_r'] * self.mu_0
+                self.epsilon_grid[self.mask_Hz == scatterer.ID] = scatterer.properties['e_r'] * epsilon_0
+                self.mu_grid[self.mask_Hz == scatterer.ID] = scatterer.properties['m_r'] * mu_0
                 #unphysical, is storing e_0,m_0 for PEC & PMC, used for the avg, locations with PMC/PEC use BC updates
         self.epsilon_yavg = (self.epsilon_grid[:-1, :] + self.epsilon_grid[1:, :]) / 2
         self.epsilon_xavg = (self.epsilon_grid[:,:-1] + self.epsilon_grid[:,1:]) / 2
@@ -452,6 +458,31 @@ class FDTD:
         potential = 0.5 * m * w**2 * (x_rel**2 + y_rel**2)
         self.V[mask] = potential[mask]
 
+    def init_psi(self,xc,yc,ID,m,w, n1=0, n2=0, x_shift=2,y_shift=0):
+        """
+        Initializes psi for n1=n2=0  coherent state of potential (stationary if no shift applied)
+        :param xc: x of potential center
+        :param yc: y of potential center
+        :param ID: well ID to be used for masking
+        :param m: effective mass
+        :param w: omega
+        :return: updates the psi_r with local wavefunction
+        """
+
+        a = np.sqrt(m * w / hbar)
+        print(f'Gaussian width sigma = {1/a}')
+        x_rel = self.Xc - xc
+        y_rel = self.Yc - yc
+        mask = ndimage.binary_erosion(self.mask_Hz == ID)   # local e-well mask, not touching the boundary
+        hermite_term = special.hermite(n1)(a*x_rel) * special.hermite(n2)(a*y_rel)
+        psi_local = np.exp(-0.5 * a**2 * ((x_rel - (x_shift * np.sqrt(2)/a))** 2 + (y_rel - (y_shift * np.sqrt(2)/a))** 2))    # currently full grid, contains unwanted near-zero values
+        psi_local *= hermite_term
+        # normalize - instead of analytical we compute discrete integral
+        norm = np.sqrt(np.sum(psi_local[mask]**2 * self.dx_fine**2))
+        psi_local /= norm
+        self.psi_r[mask] = psi_local[mask]
+
+
 
     def update(self):
 
@@ -470,10 +501,11 @@ class FDTD:
                     # - self.dt / self.epsilon_yavg * self.Jqy[:,:]                                 # masking j-term is not necessary as long as psi is masked (dirichlet-BC)
 
         if self.there_is_qm:
-            Qmaskx = self.mask_Ex == 1
-            Qmasky = self.mask_Ey == 1
-            self.Ex[Qmaskx] -= (self.dt / epsilon_0) * self.Jqx[Qmaskx]
-            self.Ey[Qmasky] -= (self.dt / epsilon_0) * self.Jqy[np.pad(Qmaskx,((0,1),(0,0)))[:,:-1]]
+            # Qmaskx = self.mask_Ex == 1
+            # Qmasky = self.mask_Ey == 1
+            self.Ex[self.maskQM_Ex] -= (self.dt / epsilon_0) * self.Jqx[self.maskQM_Ex]
+            # self.Ey[self.maskQM_Ey] -= (self.dt / epsilon_0) * self.Jqy[np.pad(Qmaskx,((0,1),(0,0)))[:,:-1]]
+            self.Ey[self.maskQM_Ey] -= (self.dt / epsilon_0) * self.Jqy[self.maskQM_Ey]
 
         if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
             for scatterer in self.scatterer_list:
@@ -559,22 +591,23 @@ class FDTD:
             ex = field_avg(self.Ex,'vertical')
             ey = field_avg(self.Ey, 'horizontal')
 
-            self.psi_r[self.maskQM==1] -= self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM==1]
-                                                               + q_e * ex[self.maskQM==1] * self.Xc[self.maskQM==1] * self.psi_i[self.maskQM==1]
-                                                               + q_e * ey[self.maskQM==1] * self.Yc[self.maskQM==1] * self.psi_i[self.maskQM==1]
-                                                               - self.V[self.maskQM==1] * self.psi_i[self.maskQM==1] )
+            self.psi_r[self.maskQM] -= self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM]
+                                                               + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_i[self.maskQM]
+                                                               + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_i[self.maskQM]
+                                                               - self.V[self.maskQM] * self.psi_i[self.maskQM] )
 
-            self.psi_i[self.maskQM==1] += self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM==1]
-                                                               + q_e * ex[self.maskQM==1] * self.Xc[self.maskQM==1] * self.psi_r[self.maskQM==1]
-                                                               + q_e * ey[self.maskQM==1] * self.Yc[self.maskQM==1] * self.psi_r[self.maskQM==1]
-                                                               - self.V[self.maskQM==1] * self.psi_r[self.maskQM==1] )
+            self.psi_i[self.maskQM] += self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM]
+                                                               + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_r[self.maskQM]
+                                                               + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_r[self.maskQM]
+                                                               - self.V[self.maskQM] * self.psi_r[self.maskQM] )
 
             # Calculate Jx and Jy
+            q = -q_e
             self.Jqx = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:])-self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:]))
             self.Jqy = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
+            self.psi_i_old = self.psi_i
 
-
-        # 
+        #
         self.update_observation_points()
 
     def source_pw(self, time):
@@ -674,7 +707,7 @@ class FDTD:
         Qmovie = []
         binary = plt.cm.binary(np.linspace(0, 1, 256))
         alphas = np.linspace(0.0, 1.0, 256)
-        binary[:, -1] = alphas 
+        binary[:, -1] = alphas
         binary_alpha = ListedColormap(binary)
 
         for it in tqdm(range(0,nt), desc='Simulating'):
@@ -720,8 +753,8 @@ class FDTD:
                     artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskPECy,cmap=binary_alpha,vmin=0,vmax=1))
                 if self.there_is_qm:
                     prob = np.sqrt(self.psi_r**2+self.psi_i**2)
-                    artists.append(Qax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=5))
-                    artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=5))
+                    artists.append(Qax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=1))
+                    artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=1))
                     Qartists = [
                         Qax.text(0.5, 1.05, '%d/%d' % (it, nt),
                                 size=plt.rcParams["axes.titlesize"],
@@ -846,7 +879,7 @@ def UI_PW():
     if PW_type == 'sinusoidal':
         PW['fc'] = fc
     return(PW,nt)
-    
+
 def UI_scatterers():
     # 3. scatterers
     counter = 0
@@ -931,7 +964,7 @@ def user_inputs():
     print("==========Custom==========")
 
     Lx,Ly = UI_Size()
-        
+
     PW, nt = UI_PW()
 
     scatter_list = UI_scatterers()
@@ -1031,13 +1064,13 @@ def Run():
         elif choice == '3':
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     10,10,10000000,10000000000000)
-        elif choice == '4':
-            return testing(0.000005,0.000005,1,0.0000000000000000056,'circle',0.0000025,0.0000025,0.00000025,'e', rel_m_eff=0.15, omega=50e14)
+        elif choice == '4':                                                                                                                                                        #omega was 50e14
+            return testing(0.000005,0.000005,1,0.0000000000000000056,'circle',0.0000025,0.0000025,0.00000025 * 2,'e', rel_m_eff=0.15, omega= 50e14, timesteps=500)
         elif choice == '0':
             return Run()
 
 
-def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['0.0,0.0','0.0,0.0'], rel_m_eff=0.0, omega=0.0):
+def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['0.0,0.0','0.0,0.0'], rel_m_eff=0.0, omega=0.0, timesteps=700):
     # 1. size of sim area
     # Lx, Ly = map(float,input('Please provide the lengths Lx [cm] and Ly [cm] in Lx,Ly format: ').split(','))
     # 2. PW parameters
@@ -1089,7 +1122,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, 
         a,b = xy.split(',')
         obs_dict_tuples[(float(a)*0.01, float(b)*0.01)] = ObservationPoint(float(a)*0.01,float(b)*0.01)
 
-    return Lx, Ly, PW, scatter_list, obs_dict_tuples, 700
+    return Lx, Ly, PW, scatter_list, obs_dict_tuples, timesteps
 
 # to test the Drude implementation, copied numbers from graphene example of syllabus
 #  lamda ~ 5 micrometer -> ~ Thz freq
@@ -1141,13 +1174,13 @@ def analytical_solution(sim_ob):
     """"
     this is the total field solution for a plane wave incident on a circular scatterer in free space.
     """
-    
+
     for obs in sim_ob.observation_points.values():
         #parameters
 
         rho = np.sqrt(obs.x**2 + obs.y**2)   # Distance from the origin to the observation point
         phi = np.arctan2(obs.y, obs.x)  # Angle in polar coordinates
-        
+
         # Wavevector (k) based on the wavelength
 
         k_values = np.linspace(0.1, 2*sim_ob.k, 500)  # Avoid k=0 to prevent division by zero
@@ -1167,20 +1200,20 @@ def analytical_solution(sim_ob):
 
         #k_values = np.linspace(0.1, 10, 500)  # Avoid k=0 to prevent division by zero
         Hz_scat_values = []
-        
+
         # Function to compute nu(n)
         def nu(n):
             if n == 0:
                 return 1
             return 2
-        
-        
-        
-        for k in k_values:
-        
 
-     
-        
+
+
+        for k in k_values:
+
+
+
+
             ka = k * a
             N_max = int(np.ceil(ka + 10))  # Number of summations
             Hz_scat = 0.0
@@ -1258,7 +1291,7 @@ def compare_numerical_analytical(sim_object):
         axc= fig.add_subplot(111)
         axc.plot(freq_numerical, np.abs(difference), label="difference", alpha=0.7)
         axc.set_xlim(0, np.max(freq_numerical))
-        axc.set_ylim(0, 2*diff_max) # Adjust y-axis limit for better visibility 
+        axc.set_ylim(0, 2*diff_max) # Adjust y-axis limit for better visibility
         plt.title(f"Frequency Response Comparison at Observation Point ({obs.x}, {obs.y})")
         plt.xlabel("Frequency (Hz)")
         plt.ylabel("Magnitude")
@@ -1274,15 +1307,28 @@ Lx, Ly, PW, scatter_list, obs_dict_tuples, nt = Run()
 sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
 
 print(f"Lx = {sim.Lx}, Ly = {sim.Ly}")
-print(f"dt = {sim.dt}, nt = {nt}")
+print(f"dt = {sim.dt}, nt = {nt}, dx = {sim.dx_fine}")
 print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
 print(f"Grid size = {sim.Nx} x {sim.Ny}")
+print(f"V max: {np.max(sim.V)}, T_osc: {2*np.pi / 50e14 }")
 
 import time
 start = time.time()
 end = sim.iterate(int(nt), visu = True, just1D=False, saving=False)
 print(f"Runtime: {end - start:.2f} seconds")
+def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
+    # import matplotlib.pyplot as plt
+    plt.figure(figsize=(6, 5))
+    pcm = plt.pcolormesh(Xc * 1e9, Yc * 1e9, V, shading='auto')
+    plt.colorbar(pcm, label="V [J]")
+    plt.xlabel("x [nm]")
+    plt.ylabel("y [nm]")
+    plt.title(title)
+    plt.axis('equal')
+    plt.tight_layout()
+    plt.show()
 
+# plot_potential(sim.V, sim.Xc, sim.Yc)
 
 #sim1 = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     #10,10,10000000,10000000000000,['6,10','14,10']))2          These worked with an older version of the code , amount of timesteps was 1400 and the wave moved in the positive x direction
