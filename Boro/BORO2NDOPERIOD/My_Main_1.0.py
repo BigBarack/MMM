@@ -8,6 +8,26 @@ from matplotlib.ticker import MaxNLocator
 from scipy.special import hankel2
 from scipy.special import jv
 from scipy import ndimage
+from scipy import special
+# from matplotlib import use
+# use('TkAgg')
+
+try:
+    from tqdm import tqdm
+    using_tqdm = True
+except ImportError:
+    using_tqdm = False
+    # fallback: basic wrapper that does nothing, tqdm was not working in my powershell, not needed to pip install
+    def tqdm(iterable, **kwargs):
+        return iterable
+
+epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
+mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
+c = 1 / np.sqrt(mu_0 * epsilon_0)
+h = 6.62607015e-34
+hbar = h/(2*np.pi)
+m_e = 9.10938356e-31  # Electron mass
+q_e = 1.602176634e-19 # Electron charge
 
 
 def clear():
@@ -32,6 +52,28 @@ def cross_average2Drray(arr):
     cross_avg = (padded[1:-1,1:-1] + padded[:-2,1:-1] + padded[2:,1:-1] + padded[1:-1,:-2] + padded[1:-1,2:] ) / 5
     return cross_avg
 
+def field_avg(field,axis):
+    if axis=='vertical':
+        padded = np.pad(field, ((1, 1), (0, 0)))
+        avg = 0.5 * (padded[1:,:] + padded[:-1,:])
+    elif axis=='horizontal':
+        padded = np.pad(field, ((0, 0), (1, 1)))
+        avg = 0.5 * (padded[:,1:] + padded[:,:-1])
+    return avg
+
+
+
+def laplacian_2D_4o(field,d):
+    """
+    for a given field array (used on Psi), compute the discretized to fourth order laplacian, using padding=0
+    :param field: the field the laplacian acts on
+    :param d: uniform grid step
+    :return: nabla**2 of field
+    """
+    padded = np.pad(field,2,constant_values=0)
+    lap1 =  (-padded[4:,2:-2] + 16 * padded[3:-1,2:-2] - 30 * padded[2:-2,2:-2] + 16 * padded[1:-3,2:-2] - padded[:-4,2:-2]) / (12 * d**2)
+    lap2 =  (-padded[2:-2,4:] + 16 * padded[2:-2,3:-1] - 30 * padded[2:-2,2:-2] + 16 * padded[2:-2,1:-3] - padded[2:-2,:-4]) / (12 * d**2)
+    return lap1 + lap2
 
 class ObservationPoint:
     def __init__(self,x,y):
@@ -90,20 +132,6 @@ class Scatterer:
 
 class FDTD:
     def __init__(self, Lx:float , Ly:float , PW:dict , scatterer_list:list , observation_points:dict ):
-
-        # constants
-        self.epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
-        self.mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
-        self.c = 100 / np.sqrt(self.mu_0 * self.epsilon_0)  # Speed of light in vacuum
-        self.h = 6.62607015e-34  # Planck's constant
-        self.hbar = self.h / (2 * np.pi)  # Reduced Planck's constant
-        self.m = 9.10938356e-31  # Electron mass
-
-        #Note TO SELF: Later maybe input the amount of charge itself
-        
-        self.q = 1.602176634e-19  # Elementary charge
-
-
         # sim area
         self.Lx = Lx * 0.01
         self.Ly = Ly * 0.01
@@ -115,6 +143,9 @@ class FDTD:
         self.A = PW['A']
         self.s_pulse = PW['s_pulse']
         self.direction = PW['direction']    # +x -x +y -y
+        self.PW_type = PW['PW_type']
+        if self.PW_type == 'sinusoidal':
+            self.fc = PW['fc']
 
         # gridding
         self.dx_coarse = self.lmin / 10
@@ -126,6 +157,7 @@ class FDTD:
         self.there_is_Drude = any([ scat.material == 'Drude' for scat in scatterer_list])
         self.there_is_PEC = any([scat.material == 'PEC' for scat in scatterer_list])
         self.there_is_PMC = any([scat.material == 'PMC' for scat in scatterer_list])
+        self.there_is_qm = any([scat.material == 'e' for scat in scatterer_list])
 
         # PML
         self.PML_n = 15
@@ -138,7 +170,7 @@ class FDTD:
             return self.PML_SigmaMax * (i / self.PML_n) ** self.PML_m
 
         def sigma_h(self, i):
-            return sigma_e(self, i) * self.mu_0 / self.epsilon_0
+            return sigma_e(self, i) * mu_0 / epsilon_0
 
         def sigmamask(self, array, axis):
             mask = np.zeros_like(array)
@@ -221,7 +253,7 @@ class FDTD:
         x_centers = 0.5 * (self.x_edges[:-1] + self.x_edges[1:])
         y_centers = 0.5 * (self.y_edges[:-1] + self.y_edges[1:])
         self.Xc, self.Yc = np.meshgrid(x_centers, y_centers, indexing='xy')
-        _, self.DY_Ex = np.meshgrid(x_centers, self.dy_dual, indexing='xy')
+        _ , self.DY_Ex = np.meshgrid(x_centers ,self.dy_dual, indexing='xy')
         self.DX_Ey , _ = np.meshgrid(self.dx_dual, y_centers, indexing='xy')
         self.DX_Hz, self.DY_Hz = np.meshgrid(self.dx, self.dy, indexing='xy')
 
@@ -230,30 +262,26 @@ class FDTD:
         self.Ny, self.Nx = self.Hz.shape
         self.Ex = np.zeros((self.Ny-1,self.Nx))
         self.Ey = np.zeros((self.Ny, self.Nx-1))
-        self.epsilon_grid = np.full(self.Hz.shape,self.epsilon_0)
+        self.epsilon_grid = np.full(self.Hz.shape,epsilon_0)
         self.epsilon_yavg = np.zeros_like(self.Ex)                 #epsilon spatially averaged over y, used for Ex update
         self.epsilon_xavg = np.zeros_like(self.Ey)                 #epsilon spatially averaged over x, used for Ey update
-        self.mu_grid = np.full(self.Hz.shape, self.mu_0)
-        self.Jcx = np.zeros_like(self.Ex)
-        self.Jcy = np.zeros_like(self.Ey)
+        self.mu_grid = np.full(self.Hz.shape,mu_0)
+        if self.there_is_Drude:
+            self.Jcx = np.zeros_like(self.Ex)
+            self.Jcy = np.zeros_like(self.Ey)
 
-        # initialize  quantum fields
-        """
-        the shape of the fields will be that of Hz but +4 in all directions. I do this such that there will be no problems with 4th order discretization
-        This means that boundary conditions in case our mask is on the border need to be adjusted
+        # initialize quantum fields
+        if self.there_is_qm:
+            self.psi_r = np.zeros_like(self.Hz)
+            self.psi_i = np.zeros_like(self.Hz)
+            self.psi_i_old = np.zeros_like(self.Hz)
+            self.Jqx = np.zeros_like(self.Ex)
+            self.Jqy = np.zeros_like(self.Ey)
+            self.V = np.zeros_like(self.Hz)
+            self.maskQM_Ex = np.zeros_like(self.Ex)
+            self.maskQM_Ey = np.zeros_like(self.Ey)
+            self.maskQM = np.zeros_like(self.Hz)
 
-        another note is that the psi will alread be presuned to be in the length gauge allowing us to use equation 3.108 in the course
-        in the 2d-case this becomes rather simple. Be carefull to adjust shape sizes
-        
-        I will split the fields in a real and imaginary part here such that i won't have to deal with components in the equation using numpy)
-        """
-
-        self.PS_R = np.zeros((self.Ny+4,self.Nx+4))
-        self.PS_I = np.zeros((self.Ny+4,self.Nx+4)) 
-        self.PS_R[50,50] = 50
-
-        #initiate potential field
-        self.V = np.zeros((self.Ny+4,self.Nx+4))
         # generate mask
         self.mask_Hz = np.zeros_like(self.Hz)
         self.TFSFhup = np.zeros_like(self.Hz)
@@ -287,7 +315,7 @@ class FDTD:
             self.mask_Ey[inside_y] = scatterer.ID
 
         if self.there_is_PEC:
-            print('PEC found')              # debugger
+            # print('PEC found')              # debugger
             for scatterer in self.scatterer_list:   #locate all the PECs
                 if scatterer.material == 'PEC':
                     self.maskPECx[self.mask_Ex == scatterer.ID] = 1
@@ -318,12 +346,38 @@ class FDTD:
             self.maskPMCy[:-1, :] = (self.maskPMCy[:-1, :].astype(bool) | (
                         surfy[:-1, :].astype(bool) & bulky[1:, :].astype(bool))).astype(int)
 
+        if self.there_is_qm:
+            for scatterer in self.scatterer_list:   #locate all electron wells
+                if scatterer.material == 'e':
+                    self.maskQM_Ex[self.mask_Ex == scatterer.ID] = 1   #to be used for backwards coupling
+                    self.maskQM_Ey[self.mask_Ey == scatterer.ID] = 1
+                    self.maskQM[self.mask_Hz == scatterer.ID] = 1
+                    # create potential
+                    xc, yc = scatterer.geometry['center']
+                    r = scatterer.geometry['radius']
+                    m_eff = scatterer.properties['m_eff']*m_e
+                    omega = scatterer.properties['omega']
+                    self.get_V(xc,yc,r, m_eff, omega) # create each potential well
+                    self.init_psi(xc,yc,scatterer.ID,m_eff,omega)
 
+                    #check if it fullfills the stability condtion ONLY FOURTH ORDER
+                    if self.dt > np.max(2/(
+                        (8/3*hbar/(m_e*m_eff))*
+                        (1/(self.dx**2) + 1/(self.dy**2))
+                        + 1/hbar*self.V 
+                        )
+                        ):
+                        raise ValueError(f"Stability condition not satisfied for well {scatterer.ID} with dt={self.dt} and dx={self.dx} and dy={self.dy}")
+                    # self.psi_r[81,81]=1   #was a test initialization
+            self.maskQM_Ex = self.maskQM_Ex.astype(bool)
+            self.maskQM_Ey = self.maskQM_Ey.astype(bool)
+            # self.maskQM = self.maskQM.astype(bool)
+            self.maskQM = ndimage.binary_erosion(self.maskQM)   # not touching BC, therefore stays 0
 
         for scatterer in self.scatterer_list:
             if scatterer.material == 'Drude':
-                self.epsilon_grid[self.mask_Hz == scatterer.ID] = scatterer.properties['e_r'] * self.epsilon_0
-                self.mu_grid[self.mask_Hz == scatterer.ID] = scatterer.properties['m_r'] * self.mu_0
+                self.epsilon_grid[self.mask_Hz == scatterer.ID] = scatterer.properties['e_r'] * epsilon_0
+                self.mu_grid[self.mask_Hz == scatterer.ID] = scatterer.properties['m_r'] * mu_0
                 #unphysical, is storing e_0,m_0 for PEC & PMC, used for the avg, locations with PMC/PEC use BC updates
         self.epsilon_yavg = (self.epsilon_grid[:-1, :] + self.epsilon_grid[1:, :]) / 2
         self.epsilon_xavg = (self.epsilon_grid[:,:-1] + self.epsilon_grid[:,1:]) / 2
@@ -360,8 +414,12 @@ class FDTD:
         self.auxdual = 0.5 * (self.aux1Dgrid[:-1] + self.aux1Dgrid[1:])
         self.Hz_1D = np.zeros_like(self.aux1Dgrid)    #in update we dont touch [0], source there
         self.E_inc = np.zeros_like(self.auxdual)
-        self.auxbc1 = 0
-        self.auxbc2 = 0
+        self.auxbc1 = 0                                # stores field value of neighbour in previous time for 1D ADE BC
+
+        if self.direction == '+x' or self.direction == '-y':
+            self.auxbc2 = (self.dt * c - self.auxdual[-1]) / (self.dt * c + self.auxdual[-1])
+        elif self.direction == '-x' or self.direction == '+y':
+            self.auxbc2 = (self.dt * c - self.auxdual[0]) / (self.dt * c + self.auxdual[0])
 
         # observation points located in respective fields
         for obs in self.observation_points.values():
@@ -398,86 +456,65 @@ class FDTD:
                 else:
                     status = 'intermediate'
         return status
-    
-    def V_well(self, X, Y):
+
+    def get_V(self,xc,yc,r,m,w):
+        # for given x,y point and radius r, create parabollic profile for 2D potential,
+        # use effective mass and angular frequency of given well
+        # update self.V using mask
+        x_rel = self.Xc - xc
+        y_rel = self.Yc - yc
+        mask = (x_rel**2 + y_rel**2) <= r**2    #boolean shape like Hz,V etc, shows were the potential well is
+        potential = 0.5 * m * w**2 * (x_rel**2 + y_rel**2)
+        self.V[mask] = potential[mask]
+
+    def init_psi(self,xc,yc,ID,m,w, n1=0, n2=0, x_shift=2,y_shift=0):
         """
-        Creates a harmonic potential well centered at a specific point (xc, yc) with a given radius.
-        The potential increases quadratically as the distance from the center increases and updates self.V.
-
-        :param X: x-coordinate matrix (e.g., self.Xc)
-        :param Y: y-coordinate matrix (e.g., self.Yc)
-        :return: Updates self.V with the potential values for the entire grid
+        Initializes psi for n1=n2=0  coherent state of potential (stationary if no shift applied)
+        :param xc: x of potential center
+        :param yc: y of potential center
+        :param ID: well ID to be used for masking
+        :param m: effective mass
+        :param w: omega
+        :return: updates the psi_r with local wavefunction
         """
-        # Center of the harmonic well
-        xc, yc = 5, 5 # Centered in the simulation domain
 
-        # Radius of the harmonic well
-        radius = min(self.Lx, self.Ly) / 10  # Example: 1/10th of the smallest domain dimension
-
-        # Spring constant for the harmonic potential
-        k = 1e3  # Adjust this value as needed for the desired strength of the potential
-
-        # Calculate the squared distance from the center
-        r_squared = (X - xc) ** 2 + (Y - yc) ** 2
-
-        # Apply the harmonic potential within the circle
-        potential = np.zeros_like(self.V)
-        potential[r_squared <= radius ** 2] = 0.5 * k * r_squared
+        a = np.sqrt(m * w / hbar)
+        print(f'Gaussian width sigma = {1/a}')
+        x_rel = self.Xc - xc
+        y_rel = self.Yc - yc
+        mask = ndimage.binary_erosion(self.mask_Hz == ID)   # local e-well mask, not touching the boundary
+        hermite_term = special.hermite(n1)(a*x_rel) * special.hermite(n2)(a*y_rel)
+        psi_local = np.exp(-0.5 * a**2 * ((x_rel - (x_shift * np.sqrt(2)/a))** 2 + (y_rel - (y_shift * np.sqrt(2)/a))** 2))    # currently full grid, contains unwanted near-zero values
+        psi_local *= hermite_term
+        # normalize - instead of analytical we compute discrete integral
+        norm = np.sqrt(np.sum(psi_local[mask]**2 * self.dx_fine**2))
+        psi_local /= norm
+        self.psi_r[mask] = psi_local[mask]
 
 
-        # Update self.V with the calculated potential
-        self.V = potential
-
-        print()
-        fig, ax = plt.subplots(figsize=(8, 8))
-        contour = ax.contourf(self.Xc, self.Yc, self.V[2:-2, 2:-2], levels=50, cmap='viridis')
-        plt.colorbar(contour, ax=ax, label="Potential")
-        ax.set_title("Harmonic Well")
-        ax.set_xlabel("x [cm]")
-        ax.set_ylabel("y [cm]")
-        plt.show()
-        return potential
-
-
-    def lap2d4th(self,field):
-        """
-        4th order laplacian in 2D
-        :param field: field to be laplacianed
-        :return: laplacian of field
-        :taken from 3.130 course
-
-        this would mean that the field are larger by two in both directions. since i need to do plus one and plus two
-        the shapes would be in total Ny+2,Ny+2 but i want to make it into Nx,Ny thus there needs to be a
-        field[2:-2,2:-2] would result in (Nx,Ny) that field will be shifted around and for regular field updates it would be better
-        to take this
-        """
-            
-        fieldxcomp = -field[4:, 2:-2] + 16*field[3:-1, 2:-2] - 30*field[2:-2, 2:-2] + 16*field[1:-3, 2:-2] - field[:-4, 2:-2]
-        fieldycomp = -field[2:-2, 4:] + 16*field[2:-2, 3:-1] - 30*field[2:-2, 2:-2] + 16*field[2:-2, 1:-3] - field[2:-2, :-4]
-        lap = fieldxcomp/(12*self.DX_Hz**2) + fieldycomp/(12*self.DY_Hz**2)
-
-            
-        """
-        quick question do we need to reset the values after we take the laplacian in the field indices that are not in the H-field? 
-        """
-        return lap
-        
 
     def update(self):
 
-        self.update_observation_points
-        #Hz update first
-        
-        """
-        because of the scheme in chapter 3 it requires us to first update the magnetic field
-        """    
+        # Ex & Ey updates
+        # self.Ex += self.dt / self.epsilon_0 * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex     # no spatial averaging
+        # self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex    # no PML
         self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex - (
-                self.dt / self.epsilon_0) * np.multiply(self.PML_ExMask, self.Ex)
+                    self.dt / epsilon_0) * np.multiply(self.PML_ExMask, self.Ex)
+                    # - self.dt / self.epsilon_yavg * self.Jqx[:,:]                                 # masking j-term is not necessary as long as psi is masked (dirichlet-BC)
+
 
         # self.Ey += self.dt / self.epsilon_0 * (self.Hz[:,:-1] - self.Hz[:,1:]) / self.DX_Ey
         # self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey    # no PML
         self.Ey += self.dt / self.epsilon_xavg * (self.Hz[:, :-1] - self.Hz[:, 1:]) / self.DX_Ey - (
-                    self.dt / self.epsilon_0) * np.multiply(self.PML_EyMask, self.Ey)
+                    self.dt / epsilon_0) * np.multiply(self.PML_EyMask, self.Ey)
+                    # - self.dt / self.epsilon_yavg * self.Jqy[:,:]                                 # masking j-term is not necessary as long as psi is masked (dirichlet-BC)
+
+        if self.there_is_qm:
+            # Qmaskx = self.mask_Ex == 1
+            # Qmasky = self.mask_Ey == 1
+            self.Ex[self.maskQM_Ex] -= (self.dt / epsilon_0) * self.Jqx[self.maskQM_Ex]
+            # self.Ey[self.maskQM_Ey] -= (self.dt / epsilon_0) * self.Jqy[np.pad(Qmaskx,((0,1),(0,0)))[:,:-1]]
+            self.Ey[self.maskQM_Ey] -= (self.dt / epsilon_0) * self.Jqy[self.maskQM_Ey]
 
         if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
             for scatterer in self.scatterer_list:
@@ -502,143 +539,114 @@ class FDTD:
         # TFSF
         if self.direction == '+x' or self.direction == '-x':
             # print(f'down{self.Ex[self.TFSFedown == 1].shape}, up{self.Ex[self.TFSFeup == 1].shape}' )
-            self.Ey[self.TFSFeleft == 1] += self.dt * self.Hz_1D[2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeleft == 1])
-            self.Ey[self.TFSFeright == 1] -= self.dt * self.Hz_1D[-3] / (self.epsilon_0 * self.DX_Ey[self.TFSFeright == 1])
-            self.Ex[self.TFSFedown == 1] += self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
-            self.Ex[self.TFSFeup == 1] -= self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
+            self.Ey[self.TFSFeleft == 1] += self.dt * self.Hz_1D[2] / (epsilon_0 * self.DX_Ey[self.TFSFeleft == 1])
+            self.Ey[self.TFSFeright == 1] -= self.dt * self.Hz_1D[-3] / (epsilon_0 * self.DX_Ey[self.TFSFeright == 1])
+            self.Ex[self.TFSFedown == 1] += self.dt * self.Hz_1D[2:-2] / (epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
+            self.Ex[self.TFSFeup == 1] -= self.dt * self.Hz_1D[2:-2] / (epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
         else:
-            print(f'Ey_left {self.Ey[self.TFSFeleft==1].shape} , Hz{self.Hz_1D[2:-2].shape} , {self.aux1Dgrid.shape}')
-            print(self.Hz_1D.shape)
-            self.Ex[self.TFSFedown==1] += self.dt * self.Hz_1D[1] / (self.epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
-            self.Ex[self.TFSFeup ==1] -= self.dt * self.Hz_1D[-2] / (self.epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
-            self.Ey[self.TFSFeleft==1] += self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeleft==1])
-            self.Ey[self.TFSFeright==1] -= self.dt * self.Hz_1D[2:-2] / (self.epsilon_0 * self.DX_Ey[self.TFSFeright==1])
+            # print(f'Ey_left {self.Ey[self.TFSFeleft==1].shape} , Hz{self.Hz_1D[2:-2].shape} , {self.aux1Dgrid.shape}')
+            # print(self.Hz_1D.shape)
+            self.Ex[self.TFSFedown==1] += self.dt * self.Hz_1D[1] / (epsilon_0 * self.DY_Ex[self.TFSFedown == 1])
+            self.Ex[self.TFSFeup ==1] -= self.dt * self.Hz_1D[-2] / (epsilon_0 * self.DY_Ex[self.TFSFeup == 1])
+            self.Ey[self.TFSFeleft==1] += self.dt * self.Hz_1D[2:-2] / (epsilon_0 * self.DX_Ey[self.TFSFeleft==1])
+            self.Ey[self.TFSFeright==1] -= self.dt * self.Hz_1D[2:-2] / (epsilon_0 * self.DX_Ey[self.TFSFeright==1])
 
 
 
-       
+        # Hz updates
+        self.Hz[1:-1,1:-1] += self.dt / self.mu_grid[1:-1,1:-1] * ( ((self.Ex[1:,1:-1] - self.Ex[:-1,1:-1]) / self.DY_Hz[1:-1,1:-1] ) +
+                                           (self.Ey[1:-1,:-1] - self.Ey[1:-1,1:]) / self.DX_Hz[1:-1,1:-1] ) - (self.dt/mu_0) * np.multiply(self.PML_HzMask[1:-1,1:-1],self.Hz[1:-1,1:-1])
 
         if self.there_is_PMC:
             self.Hz[self.maskPMCz==1] = 0
-        
-        self.Hz[1:-1,1:-1] += self.dt / self.mu_grid[1:-1,1:-1] * ( ((self.Ex[1:,1:-1] - self.Ex[:-1,1:-1]) / self.DY_Hz[1:-1,1:-1] ) +
-                                (self.Ey[1:-1,:-1] - self.Ey[1:-1,1:]) / self.DX_Hz[1:-1,1:-1] ) - (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,1:-1],self.Hz[1:-1,1:-1])
 
-        
-        Ex_interpolate = 0.5 * (self.Ex[1:, :] + self.Ex[:-1, :])# this interpolation is useless
-        Ey_interpolate = 0.5 * (self.Ey[:, 1:] + self.Ey[:, :-1])# this interpolation is useless
-        # now update the Wave fields
-        
-        self.PS_R[3:-3, 3:-3] += -self.hbar * self.dt / (2 * self.m) * self.lap2d4th(self.PS_I)[1:-1,1:-1] \
-                     - self.dt / (self.hbar) * (self.q * (self.Xc[1:-1, 1:-1] * self.Ex[:-1, 1:-1] + self.Yc[1:-1, 1:-1] * self.Ey[1:-1, :-1])-self.V[3:-3,3:-3]) * self.PS_I[3:-3, 3:-3]  # the interpolation can be used as an idea since i dont know where the E-field values are stored
-        self.PS_I[3:-3, 3:-3] += -self.hbar * self.dt / (2 * self.m) * self.lap2d4th(self.PS_R)[1:-1, 1:-1] \
-                     - self.dt / (self.hbar) * (self.q * (self.Xc[1:-1, 1:-1] * Ex_interpolate[:, 1:-1] + self.Yc[1:-1, 1:-1] * Ey_interpolate[1:-1, :])-self.V[3:-3,3:-3]) * self.PS_R[3:-3, 3:-3]  # also it right now Ex field is in n grid while it should be n+1/2
-
-        # Note THERE NO BOUNDARY CONDITIONS FOR THE WAVE FUNCTION
-        # Note No potential Added still a freely propagating wave
-
-        # Ex & Ey updates
-        # self.Ex += self.dt / self.epsilon_0 * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex     # no spatial averaging
-        # self.Ex += self.dt / self.epsilon_yavg * (self.Hz[1:, :] - self.Hz[:-1, :]) / self.DY_Ex    # no PML
-
-        self.Jcx = self.Nx * self.q * self.hbar / (self.m * self.DY_Ex[:,:])*(self.PS_R[2:-2, 2:-2]*self.PS_I[3:-1, 2:-2]-self.PS_R[3:-1, 2:-2]*self.PS_I[2:-2,2:-2])[:-1,:]  # DONT FORGET NEED TO ADJUST FOR TIME DOMAIN
-        self.Jcy = self.Ny * self.q * self.hbar / (self.m * self.DX_Ey[:,:])*(self.PS_R[2:-2, 2:-2]*self.PS_I[2:-2, 3:-1]-self.PS_R[2:-2, 3:-1]*self.PS_I[2:-2,2:-2])[:,:-1]   # DONT FORGET NEED TO ADJUST FOR TIME DOMAIN
-        
-        
         # BC bounding box; PEC = tangential electric field set to zero
         # top BC
         self.Hz[0,1:-1] += self.dt / self.mu_crossavg[0,1:-1] * ( ((self.Ex[0,1:-1] - 0 ) / self.DY_Hz[0,1:-1] ) +
-                                           ((self.Ey[0,:-1] - self.Ey[0,1:]) / self.DX_Hz[0,1:-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,1:-1],self.Hz[0,1:-1])
+                                           ((self.Ey[0,:-1] - self.Ey[0,1:]) / self.DX_Hz[0,1:-1]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[0,1:-1],self.Hz[0,1:-1])
         # bot BC
         self.Hz[-1,1:-1] += self.dt / self.mu_crossavg[-1,1:-1] * ( ((0 - self.Ex[-1,1:-1]) / self.DY_Hz[-1,1:-1] ) +
-                                           ((self.Ey[-1,:-1] - self.Ey[-1,1:]) / self.DX_Hz[-1,1:-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,1:-1],self.Hz[-1,1:-1])
+                                           ((self.Ey[-1,:-1] - self.Ey[-1,1:]) / self.DX_Hz[-1,1:-1]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[-1,1:-1],self.Hz[-1,1:-1])
         # left BC
         self.Hz[1:-1,0] += self.dt / self.mu_crossavg[1:-1,0] * ( ((self.Ex[1:,0] - self.Ex[:-1,0]) / self.DY_Hz[1:-1,0] ) +
-                                           (( 0 - self.Ey[1:-1,0]) / self.DX_Hz[1:-1,0]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,0],self.Hz[1:-1,0])
+                                           (( 0 - self.Ey[1:-1,0]) / self.DX_Hz[1:-1,0]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[1:-1,0],self.Hz[1:-1,0])
         # right BC
         self.Hz[1:-1,-1] += self.dt / self.mu_crossavg[1:-1,-1] * ( ((self.Ex[1:,-1] - self.Ex[:-1,-1]) / self.DY_Hz[1:-1,-1] ) +
-                                           ((self.Ey[1:-1,-1] - 0 ) / self.DX_Hz[1:-1,-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[1:-1,-1],self.Hz[1:-1,-1])
+                                           ((self.Ey[1:-1,-1] - 0 ) / self.DX_Hz[1:-1,-1]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[1:-1,-1],self.Hz[1:-1,-1])
         # corners topleft, topright, botleft, botright
         self.Hz[0,0] += self.dt / self.mu_crossavg[0,0] * ( ((self.Ex[0,0] - 0) / self.DY_Hz[0,0] ) +
-                                           ( 0 - self.Ey[0,0]) / self.DX_Hz[0,0] )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,0],self.Hz[0,0])
+                                           ( 0 - self.Ey[0,0]) / self.DX_Hz[0,0] )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[0,0],self.Hz[0,0])
         self.Hz[0,-1] += self.dt / self.mu_crossavg[0,-1] * ( ((self.Ex[0,-1] - 0) / self.DY_Hz[0,-1] ) +
-                                           (( self.Ey[0,-1] - 0) / self.DX_Hz[0,-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[0,-1],self.Hz[0,-1])
+                                           (( self.Ey[0,-1] - 0) / self.DX_Hz[0,-1]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[0,-1],self.Hz[0,-1])
         self.Hz[-1,0] += self.dt / self.mu_crossavg[-1,0] * ( (( 0 - self.Ex[-1,0]) / self.DY_Hz[-1,0] ) +
-                                           (( 0 - self.Ey[-1,0]) / self.DX_Hz[-1,0]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,0],self.Hz[-1,0])
+                                           (( 0 - self.Ey[-1,0]) / self.DX_Hz[-1,0]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[-1,0],self.Hz[-1,0])
         self.Hz[-1,-1] += self.dt / self.mu_crossavg[-1,-1] * ( (( 0 - self.Ex[-1,-1]) / self.DY_Hz[-1,-1] ) +
-                                           ((self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1]) )- (self.dt/self.mu_0) * np.multiply(self.PML_HzMask[-1,-1],self.Hz[-1,-1])
+                                           ((self.Ey[-1,-1] - 0 ) / self.DX_Hz[-1,-1]) )- (self.dt/mu_0) * np.multiply(self.PML_HzMask[-1,-1],self.Hz[-1,-1])
 
         #for TFSF, we just += 'known' terms on the interface and right outside
         if self.direction == '+x' or self.direction == '-x':
-            self.Hz[self.TFSFhleft == 1] += self.dt / (self.mu_0 * self.DX_Hz[self.TFSFhleft == 1]) * self.E_inc[1]
-            self.Hz[self.TFSFhright == 1] -= self.dt / (self.mu_0 * self.DX_Hz[self.TFSFhright == 1]) * self.E_inc[-2]
+            self.Hz[self.TFSFhleft == 1] += self.dt / (mu_0 * self.DX_Hz[self.TFSFhleft == 1]) * self.E_inc[1]
+            self.Hz[self.TFSFhright == 1] -= self.dt / (mu_0 * self.DX_Hz[self.TFSFhright == 1]) * self.E_inc[-2]
         else:   # +y -y
-            self.Hz[self.TFSFhdown == 1] += self.dt / (self.mu_0 * self.DY_Hz[self.TFSFhdown == 1]) * self.E_inc[1]
-            self.Hz[self.TFSFhup == 1] -= self.dt / (self.mu_0 * self.DY_Hz[self.TFSFhup == 1]) * self.E_inc[-1]
+            self.Hz[self.TFSFhdown == 1] += self.dt / (mu_0 * self.DY_Hz[self.TFSFhdown == 1]) * self.E_inc[1]
+            self.Hz[self.TFSFhup == 1] -= self.dt / (mu_0 * self.DY_Hz[self.TFSFhup == 1]) * self.E_inc[-1]
         # for +-x, Ex_inc = 0 so top bottom dont get changed, for +-y Ey_inc = 0
 
-        self.update_observation_points()
-    
-    def visualize_well_and_source(self):
-        fig, ax = plt.subplots()
-        ax.contourf(self.Xc, self.Yc, self.V[2:-2, 2:-2], levels=50, cmap='viridis')
-        ax.plot(self.Xc[5, 5], self.Yc[self.Ny // 2, self.Nx // 2], 'ro', label='Source')
-        ax.set_title("Harmonic Well and Source Position")
-        ax.set_xlabel("x [cm]")
-        ax.set_ylabel("y [cm]")
-        ax.legend()
-        plt.show()
-        return None
-    def visualize_harmonic_well(self):
-        fig, ax = plt.subplots()
-        contour = ax.contourf(self.Xc, self.Yc, self.V[2:-2, 2:-2], levels=50, cmap='viridis')
-        plt.colorbar(contour, ax=ax, label="Potential")
-        ax.set_title("Harmonic Well")
-        ax.set_xlabel("x [cm]")
-        ax.set_ylabel("y [cm]")
-        plt.show()
+        N = 1e7 # particles per meter (along Z-axis)
+        effect_m = 0.15 # (relative) effective mass
 
-        return None
+        # Update equations for Psi
+        if self.there_is_qm:
+            ex = field_avg(self.Ex,'vertical')
+            ey = field_avg(self.Ey, 'horizontal')
+
+            self.psi_r[self.maskQM] -= self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM]
+                                                               + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_i[self.maskQM]
+                                                               + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_i[self.maskQM]
+                                                               - self.V[self.maskQM] * self.psi_i[self.maskQM] )
+
+            self.psi_i[self.maskQM] += self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM]
+                                                               + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_r[self.maskQM]
+                                                               + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_r[self.maskQM]
+                                                               - self.V[self.maskQM] * self.psi_r[self.maskQM] )
+
+            # Calculate Jx and Jy
+            q = -q_e
+            self.Jqx = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:])-self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:]))
+            self.Jqy = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
+            self.psi_i_old = self.psi_i
+
+        #
+        self.update_observation_points()
+
     def source_pw(self, time):
         """
         call before each update to calculate the incident components needed for TFST
         :param time:  time to update source cell
         :return:
         """
+        if self.PW_type == 'gaussian':
+            source_term = self.A * np.exp(-(time - self.tc)**2 / (2 * self.s_pulse**2))
+        elif self.PW_type == 'sinusoidal':
+            source_term = self.A * np.exp(-(time - self.tc) ** 2 / (2 * self.s_pulse ** 2)) * np.sin(2 * np.pi * self.fc * time)
         if self.direction == '+x' or self.direction == '-y':
-            self.Hz_1D[0] = self.A * np.exp(-(time - self.tc)**2 / (2 * self.s_pulse**2))
-            self.auxbc1 = self.Hz_1D[-2]
+            self.Hz_1D[0] = source_term
+            self.auxbc1 = self.Hz_1D[-2]     #storing value of neighbour before updating
             #update
-            self.E_inc += self.dt * (self.Hz_1D[:-1] - self.Hz_1D[1:]) / (self.epsilon_0 * self.auxdual)
-            self.Hz_1D[1:-1] += self.dt * (self.E_inc[:-1] - self.E_inc[1:]) / (self.mu_0 * self.aux1Dgrid[1:-1])
+            self.E_inc += self.dt * (self.Hz_1D[:-1] - self.Hz_1D[1:]) / (epsilon_0 * self.auxdual)
+            self.Hz_1D[1:-1] += self.dt * (self.E_inc[:-1] - self.E_inc[1:]) / (mu_0 * self.aux1Dgrid[1:-1])
             # 1d ABC
-            self.Hz_1D[-1] = self.auxbc2
-            self.auxbc2 = self.auxbc1
-            self.auxbc1 = self.Hz_1D[-2]
-            # 1d abc    tried from another book
-            # self.Hz_1D[-1] = self.auxbc1 + (self.c * self.dt - self.aux1Dgrid[-1]) / (self.c * self.dt + self.aux1Dgrid[-1]) * (self.Hz_1D[-2] - self.Hz_1D[-1])
-            # 1d abc different again, other source
-            # coef = (self.c * self.dt - self.aux1Dgrid[-1]) / (self.c * self.dt + self.aux1Dgrid[-1])
-            # self.Hz_1D[-1] = self.Hz_1D[-2] + coef * (self.Hz_1D[-1] - self.Hz_1D[-2])
-            # 1d abc analytical
-            # distance_from_source = sum(self.auxdualthe)
-            # time_delay = distance_from_source / self.c
-            # delayed_t = time - time_delay
-            # print (f'time {time}, delayed_time {delayed_t}, {delayed_t}, distance {distance_from_source}')    # debugger
-            # if delayed_t > 0:   #arrived
-            #     self.Hz_1D[-1] = self.A * np.exp(-(delayed_t - self.tc) ** 2 / (2 * self.s_pulse ** 2))
-            # else:   #not arrived yet
-            #     self.Hz_1D[-1]=0
+            self.Hz_1D[-1] = self.auxbc1 + self.auxbc2 * ( self.Hz_1D[-2] - self.Hz_1D[-1] )
 
         elif self.direction == '-x' or self.direction == '+y':
-            self.Hz_1D[-1] = self.A * np.exp(-(time - self.tc) ** 2 / (2 * self.s_pulse ** 2))
+            self.Hz_1D[-1] = source_term
+            self.auxbc1 = self.Hz_1D[1]     #storing value of neighbour before updating
             # update
-            self.E_inc += self.dt * (self.Hz_1D[:-1] - self.Hz_1D[1:]) / (self.epsilon_0 * self.auxdual)
-            self.Hz_1D[1:-1] += self.dt * (self.E_inc[:-1] - self.E_inc[1:]) / (self.mu_0 * self.aux1Dgrid[1:-1])
+            self.E_inc += self.dt * (self.Hz_1D[:-1] - self.Hz_1D[1:]) / (epsilon_0 * self.auxdual)
+            self.Hz_1D[1:-1] += self.dt * (self.E_inc[:-1] - self.E_inc[1:]) / (mu_0 * self.aux1Dgrid[1:-1])
             # 1d ABC
-            self.Hz_1D[0] = self.auxbc2
-            self.auxbc2 = self.auxbc1
-            self.auxbc1 = self.Hz_1D[1]
+            self.Hz_1D[0] = self.auxbc1 + self.auxbc2 * (self.Hz_1D[1] - self.Hz_1D[0])
+
         # self.Hz_1D[0] = self.A * np.exp(-(time - self.tc) ** 2 / (2 * self.s_pulse ** 2)) * np.sin(time * 2 * np.pi * self.fc)    <-- change source type?
 
     def update_observation_points(self):
@@ -694,18 +702,30 @@ class FDTD:
 
         ax.invert_yaxis()
         plt.axis('equal')
+
+        Qfig, Qax = plt.subplots()
+        Qax.set_xlabel('(m)')
+        Qax.set_ylabel('(m)')
+        Qax.invert_yaxis()
+        plt.axis('equal')
+        Qpos = []
+        Qmom = []
+        QEkin = []
+
         movie = []
+        Qmovie = []
         binary = plt.cm.binary(np.linspace(0, 1, 256))
         alphas = np.linspace(0.0, 1.0, 256)
-        binary[:, -1] = alphas 
+        binary[:, -1] = alphas
         binary_alpha = ListedColormap(binary)
 
-        self.V_well(self.Xc, self.Yc)
-        for it in range(0,nt):
+        for it in tqdm(range(0,nt), desc='Simulating'):
             t = (it - 1) * self.dt
-            clear()
-            perc = int(it*100//nt)
-            print('==========(%d%%)==========' % perc)  # Loading bar while sim is running
+
+            if not using_tqdm and ( it % max(1, nt // 20) == 0):
+                print(f'Simulating: {int(100 * it / nt):3d}% ({it:{len(str(nt))}d}/{nt})')
+
+
 
             # hard point source used before PW was implemented
 
@@ -718,7 +738,7 @@ class FDTD:
             self.update()  # Propagate over one time step
 
             if visu:
-                if just1D:
+                if  just1D:
                     artists = [
                         ax.plot(np.arange(0, len(self.Hz_1D)), self.Hz_1D, color='r', label='Hz_1D')[0],
                         ax.plot(np.arange(0, len(self.E_inc)), self.E_inc, color='b', label='E_inc')[0],
@@ -726,33 +746,67 @@ class FDTD:
                                 size=plt.rcParams["axes.titlesize"],
                                 ha="center", transform=ax.transAxes)
                     ]
-                    ax.legend()  # Add a legend for clarity
-                
-                  
                 else:
                     artists = [
                         ax.text(0.5, 1.05, '%d/%d' % (it, nt),
-                            
                                 size=plt.rcParams["axes.titlesize"],
                                 ha="center", transform=ax.transAxes),
-                        ax.pcolormesh(self.x_edges,self.y_edges,np.sqrt(self.PS_I[2:-2,2:-2]**2+self.PS_R[2:-2,2:-2]**2),vmin=-1*self.A,vmax=1*self.A,cmap='seismic',)
+                        ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-1*self.A,vmax=1*self.A,cmap='seismic',)
                     ]
-                
+
                 for obs in sim.observation_points.values():
                     artists.append(ax.plot(obs.x, obs.y, 'ko', fillstyle="none")[0])
                 if self.there_is_PMC:
                     artists.append(ax.contourf(self.x_edges[:-1],self.y_edges[:-1],self.maskPMCz,cmap=binary_alpha,vmin=0,vmax=1))
                 if self.there_is_PEC:
                     artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskPECy,cmap=binary_alpha,vmin=0,vmax=1))
+                if self.there_is_qm:
+                    prob = np.sqrt(self.psi_r**2+self.psi_i**2)
+                    artists.append(Qax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=5))
+                    artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=5))
+                    Qartists = [
+                        Qax.text(0.5, 1.05, '%d/%d' % (it, nt),
+                                size=plt.rcParams["axes.titlesize"],
+                                ha="center", transform=ax.transAxes),
+                        Qax.pcolormesh(self.x_edges,self.y_edges,prob,cmap='seismic',)
+                    ]
+                    Qmovie.append(Qartists)
+                    #Qpos.append((np.average(np.multiply(self.x_edges,prob)),np.average(np.multiply(self.y_edges,prob))))
+                    #Qmom.append(hbar*(np.average(np.multiply((self.psi[1:]-self.x_edges[1:])/self.dx,prob)),np.average(np.multiply((self.y_edges[1:]-self.y_edges[1:])/self.dy,prob))))
+                    #QEkin.append(Qmom[-1][0]*Qmom[-1][1])
                 movie.append(artists)
-        clear()
+
         print('Iterations done')
+        endtime = time.time()
         if visu:
-            my_anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000,
-                                      blit=True)
+            anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
+            Qanim = ArtistAnimation(Qfig, Qmovie, interval=10, repeat_delay=1000, blit=True)
+
             if saving:
-                my_anim.save(filename='mur1_1d.gif', writer='pillow')
-            plt.show()
+                anim.save('H.gif', writer='pillow')
+                Qanim.save('Psi.gif', writer='pillow')
+            if self.there_is_qm:
+                while True:
+                    choice = input("Which animation to view? Type 'EM', 'QM' or 'exit': ")
+                    if choice == 'EM':
+                        plt.close(Qfig)
+                        anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
+                        fig.show()
+                        plt.show()
+                    elif choice == 'QM':
+                        plt.close(fig)
+                        Qanim = ArtistAnimation(Qfig, Qmovie, interval=10, repeat_delay=1000, blit=True)
+                        Qfig.show()
+                        plt.show()
+                    elif choice.lower() == 'exit':
+                        break
+            else:
+                anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
+                plt.close(Qfig)
+                fig.show()
+                plt.show()
+        return endtime
+
 
 
 def UI_Size():
@@ -770,23 +824,46 @@ def UI_PW():
     # 2. PW parameters
     while 1:
         try:
-            A, s_pulse = map(float,input('\nPlease provide the amplitude A of the source and the pulse width sigma in A,sigma format\n').split(','))
+            A, s_pulse = map(float,input('\nPlease provide the amplitude A of the source and the pulse width sigma in A,sigma format:\n').split(','))
             break
         except ValueError:
             print("Please insert 2 valid values!")
+    while 1:
+        try:
+            source_choice = input("Please choose the source type:\n" \
+            "Gaussian pulse: 1\n" \
+            "Gaussian-modulated sinusoidal radio-frequency (RF) pulse: 2\n\n")
+            assert source_choice in ['1','2']
+            break
+        except AssertionError:
+            print("Please make a valid choice!\n")
+    if source_choice == '1':
+        PW_type = 'gaussian'
+    elif source_choice == '2':
+        PW_type = 'sinusoidal'
+        while 1:
+            try:
+                fc = float(input('Please provide the central frequency fc [Hz]:\n'))
+                break
+            except ValueError:
+                print('Please enter a valid frequency (float)')
     epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
     mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
     c = 1 / np.sqrt(mu_0 * epsilon_0)
-    l_min = 2 * np.pi * c * s_pulse / 3 # could also try / 5; w_max = 5 / s_pulse
+    if PW_type == 'gaussian':
+        l_min = 2 * np.pi * c * s_pulse / 3 # could also try / 5; w_max = 5 / s_pulse
+    else:
+        bandwidth = 0.44 / s_pulse
+        f_max = fc + bandwidth / 2
+        l_min = c / f_max
     dx_min = l_min / 20
     CFL = 1
     dt = CFL / ( c * np.sqrt((1 / dx_min ** 2) + (1 / dx_min ** 2)))   # time step from spatial disc. & CFL
     tc = 6 * s_pulse                                                   # suggested tc >= 5 * sigma
-    nt = 700
     while 1:
         try:
             print(f'\nFor the given pulse width, timestep = {dt} and central time tc = {tc} are recommended; If '
-                  f'the user prefers manual input enter them in dt,tc format otherwise just enter.')
+                  f'the user prefers manual input enter them in dt,tc format otherwise just enter.\n')
             steps = input()
             if bool(steps):
                 dt,tc = map(float,steps.split(','))
@@ -806,9 +883,12 @@ def UI_PW():
             break
         except ValueError:
             print("Please insert a valid amount!\n")
-    PW = { 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction}
+
+    PW = { 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction, 'PW_type' : PW_type}
+    if PW_type == 'sinusoidal':
+        PW['fc'] = fc
     return(PW,nt)
-    
+
 def UI_scatterers():
     # 3. scatterers
     counter = 0
@@ -827,7 +907,7 @@ def UI_scatterers():
         if shape == 'circle':
             while 1:
                 try:
-                    xc,yc,r = input('\nPlease provide the center coordinates and the radius in xc[cm],xy[cm],radius[cm] format: \n').split(',')
+                    xc,yc,r = input('\nPlease provide the center coordinates and the radius in xc[cm],xy[cm],radius[cm] format:\n').split(',')
                     geometry = {'center': (float(xc)*0.01, float(yc)*0.01), 'radius': float(r)*0.01}
                     break
                 except ValueError:
@@ -842,14 +922,13 @@ def UI_scatterers():
                 except ValueError:
                     print("Please insert valid coordinates!\n")
 
-        # if PEC or PMC is chosen, the scatterer is inserted but treated as free space, only refinement is done
         if shape == 'none':
             break
 
         while 1:
             try:
-                material = input('\nPlease provide the type of material ( PEC / PMC / Drude ): \n')
-                assert material in ['PEC','PMC','Drude']
+                material = input('\nPlease provide the type of material ( PEC / PMC / Drude ) or e for an electron well: \n')
+                assert material in ['PEC','PMC','Drude', 'e']
                 break
             except AssertionError:
                 print("Please insert a valid material type!\n")
@@ -858,6 +937,14 @@ def UI_scatterers():
                 try:
                     e_r,m_r, sigma, gamma  = input('\nPlease provide the material properties in relative permittivity,relative permeability,sigma_DC,gamma format: \n').split(',')
                     properties = { 'e_r' : float(e_r) , 'm_r' : float(m_r), 'sigma_DC' : float(sigma) , 'gamma' : float(gamma)}
+                    break
+                except ValueError:
+                    print("Please insert valid values!\n")
+        elif material == 'e':
+            while 1:
+                try:
+                    omega, m_eff = input('\nPlease provide the angular frequency and effective mass used in the potential in omega,m format: \n').split(',')
+                    properties = { 'omega' : float(omega), 'm_eff' : float(m_eff)}
                     break
                 except ValueError:
                     print("Please insert valid values!\n")
@@ -871,7 +958,7 @@ def UI_obs():
     # 4. location(s) of observation points (x,y)
     while 1:
         try:
-            observation_points_lstr = input('\nPlease provide the observation points in x1,y1;...;xn,yn format: \n').split(';')
+            observation_points_lstr = input('\nPlease provide the observation points in x1,y1;...;xn,yn format:\n').split(';')
             obs_dict_tuples = {}
             for xy in observation_points_lstr:
                 a,b = xy.split(',')
@@ -886,8 +973,8 @@ def user_inputs():
     print("==========Custom==========")
 
     Lx,Ly = UI_Size()
-        
-    PW = UI_PW()
+
+    PW, nt = UI_PW()
 
     scatter_list = UI_scatterers()
 
@@ -921,6 +1008,29 @@ def user_inputs():
 
     return Lx, Ly, PW, scatter_list, obs_dict_tuples, nt
 
+def validate_inputs(Lx: float, Ly:float, PW:dict, PML_n = 15, edge_to_TFSF = 20, obs_dict= None)-> bool:
+    """
+    Validates that:
+    - domain is large enough to fit PML and TFSF region for given gridding (dependent on wavelength)
+    - all observation points lie within the domain
+
+    :return: True if valid, False if not valid
+    """
+    valid = True
+    dx_coarse = PW['lmin'] / 10
+    margins = 2 * dx_coarse * max(PML_n , edge_to_TFSF) # in meters
+    if Lx*0.01 < margins or Ly*0.01 < margins:
+        print(f"WARNING! Domain is too small ({Lx} cm x {Ly} cm).")
+        print(f"At least {margins*100} cm are needed for the UPML & TFSF implementation.")
+        valid = False
+    if obs_dict:
+        for x,y in obs_dict:
+            if not(0 <= x*100 <= Lx and 0 <= y*100 <= Ly):
+                print(f"WARNING! Observation point ({x*100},{y*100}) is outside the domain.")
+                valid = False
+    return valid
+
+
 def Run():
     choice = 0
     while 1:
@@ -936,6 +1046,9 @@ def Run():
             print("Please make a valid choice!\n")
     if choice == '1':
         Lx, Ly, PW, scatterers, obs, nt = user_inputs()
+        if not validate_inputs(Lx=Lx, Ly=Ly, PW=PW, obs_dict=obs):
+            input("Press Enter to return to the start...")
+            return Run()
         return Lx, Ly, PW, scatterers, obs, nt
     elif choice == '2':
         while 1:
@@ -946,33 +1059,31 @@ def Run():
                 "PEC circle: 1\n" \
                 "PMC circle: 2\n" \
                 "Drude circle: 3\n" \
+                "e-Well circle: 4\n" \
                 "\n" \
                 "Return: 0\n")
-                assert choice in ['0','1','2','3']
+                assert choice in ['0','1','2','3','4']
                 break
             except AssertionError:
                 print("Please make a valid choice!\n")
         if choice == '1':
-            return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'PEC',
-                    10,10,10000000,10000000000000,['8.9,10','11.1,10'])
+            return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'PEC')
         elif choice == '2':
-            return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'PMC',
-                    10,10,10000000,10000000000000,['8.9,10','11.1,10'])
+            return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'PMC')
         elif choice == '3':
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
-                    10,10,10000000,10000000000000,['8.9,10','11.1,10'])
+                    10,10,10000000,10000000000000)
+        elif choice == '4':                                                                                                                                                        #omega was 50e14
+            return testing(0.000005,0.000005,0,0.0000000000000000056,'circle',0.0000025,0.0000025,0.00000025 * 2,'e', rel_m_eff=0.15, omega= 50e14, timesteps=500)
         elif choice == '0':
             return Run()
 
 
-def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma, gamma, observation_points_lstr):
+def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['0.0,0.0','0.0,0.0'], rel_m_eff=0.0, omega=0.0, timesteps=700):
     # 1. size of sim area
     # Lx, Ly = map(float,input('Please provide the lengths Lx [cm] and Ly [cm] in Lx,Ly format: ').split(','))
     # 2. PW parameters
     # A, s_pulse = map(float,input('Please provide the amplitude A of the source and the pulse width sigma in A,sigma format').split(','))
-    epsilon_0 = 8.8541878128e-12  # F/m (permittivity of vacuum)
-    mu_0 = 4 * np.pi * 1e-7  # H/m (permeability of vacuum)
-    c = 1 / np.sqrt(mu_0 * epsilon_0)
     l_min = 2 * np.pi * c * s_pulse / 3 # could also try / 5; w_max = 5 / s_pulse
     dx_min = l_min / 20
     CFL = 1
@@ -983,7 +1094,8 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma,
     # if bool(steps):
     #     dt,tc = map(float,steps.split(','))
     direction = '+x'
-    PW = { 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction}
+    PW_type = 'gaussian'
+    PW = {'PW_type' : PW_type, 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction}
     # 3. scatterers
     # shape = input('Please provide the shape of the scatterer (circle or rectangle or free or none): ')     #defien free later
     counter = 0
@@ -1004,6 +1116,8 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma,
         if material == 'Drude':
             # e_r,m_r, sigma, gamma  = input('Please provide the material properties in relative permittivity,relative permeability,sigma_DC,gamma format: ').split(',')
             properties = { 'e_r' : float(e_r) , 'm_r' : float(m_r), 'sigma_DC' : float(sigma) , 'gamma' : float(gamma)}
+        elif material == 'e':
+            properties = { 'm_eff' : float(rel_m_eff) , 'omega' : float(omega)}
         else:
             properties = {}
         counter += 1
@@ -1017,7 +1131,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r,m_r, sigma,
         a,b = xy.split(',')
         obs_dict_tuples[(float(a)*0.01, float(b)*0.01)] = ObservationPoint(float(a)*0.01,float(b)*0.01)
 
-    return Lx, Ly, PW, scatter_list, obs_dict_tuples, 700
+    return Lx, Ly, PW, scatter_list, obs_dict_tuples, timesteps
 
 # to test the Drude implementation, copied numbers from graphene example of syllabus
 #  lamda ~ 5 micrometer -> ~ Thz freq
@@ -1069,13 +1183,13 @@ def analytical_solution(sim_ob):
     """"
     this is the total field solution for a plane wave incident on a circular scatterer in free space.
     """
-    
+
     for obs in sim_ob.observation_points.values():
         #parameters
 
         rho = np.sqrt(obs.x**2 + obs.y**2)   # Distance from the origin to the observation point
         phi = np.arctan2(obs.y, obs.x)  # Angle in polar coordinates
-        
+
         # Wavevector (k) based on the wavelength
 
         k_values = np.linspace(0.1, 2*sim_ob.k, 500)  # Avoid k=0 to prevent division by zero
@@ -1095,20 +1209,20 @@ def analytical_solution(sim_ob):
 
         #k_values = np.linspace(0.1, 10, 500)  # Avoid k=0 to prevent division by zero
         Hz_scat_values = []
-        
+
         # Function to compute nu(n)
         def nu(n):
             if n == 0:
                 return 1
             return 2
-        
-        
-        
-        for k in k_values:
-        
 
-     
-        
+
+
+        for k in k_values:
+
+
+
+
             ka = k * a
             N_max = int(np.ceil(ka + 10))  # Number of summations
             Hz_scat = 0.0
@@ -1134,10 +1248,6 @@ def analytical_solution(sim_ob):
         axH.grid(True)
         axH.legend()
         plt.show()
-
-    
-
-
 
 def compare_numerical_analytical(sim_object):
     for obs in sim_object.observation_points.values():
@@ -1190,7 +1300,7 @@ def compare_numerical_analytical(sim_object):
         axc= fig.add_subplot(111)
         axc.plot(freq_numerical, np.abs(difference), label="difference", alpha=0.7)
         axc.set_xlim(0, np.max(freq_numerical))
-        axc.set_ylim(0, 2*diff_max) # Adjust y-axis limit for better visibility 
+        axc.set_ylim(0, 2*diff_max) # Adjust y-axis limit for better visibility
         plt.title(f"Frequency Response Comparison at Observation Point ({obs.x}, {obs.y})")
         plt.xlabel("Frequency (Hz)")
         plt.ylabel("Magnitude")
@@ -1199,22 +1309,37 @@ def compare_numerical_analytical(sim_object):
         plt.tight_layout()
         plt.show()
 
-
-
-
-
 #For testing purposes
 #sim = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
 #                    10,10,10000000,10000000000000,['6,10','14,10']))
 Lx, Ly, PW, scatter_list, obs_dict_tuples, nt = Run()
 sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
-print(np.shape(sim.dt))
-sim.V_well(5,5)
-#sim.iterate(int(nt), visu = True, just1D=False, saving=False)
-#sim.visualize_well_and_source()
-sim.visualize_harmonic_well()
 
+print(f"Lx = {sim.Lx}, Ly = {sim.Ly}")
+print(f"dt = {sim.dt}, nt = {nt}, dx = {sim.dx_fine}")
+print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
+print(f"Grid size = {sim.Nx} x {sim.Ny}")
+print(f"V max: {np.max(sim.V)}, T_osc: {2*np.pi / 50e14 }")
 
+import time
+start = time.time()
+end = sim.iterate(int(nt), visu = True, just1D=False, saving=False)
+print(f"Runtime: {end - start:.2f} seconds")
+def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
+    # import matplotlib.pyplot as plt
+    plt.figure(figsize=(6, 5))
+    pcm = plt.pcolormesh(Xc * 1e9, Yc * 1e9, V, shading='auto')
+    plt.colorbar(pcm, label="V [J]")
+    plt.xlabel("x [nm]")
+    plt.ylabel("y [nm]")
+    plt.title(title)
+    plt.axis('equal')
+    plt.tight_layout()
+    plt.show()
+
+# plot_potential(sim.V, sim.Xc, sim.Yc)
+
+#sim1 = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     #10,10,10000000,10000000000000,['6,10','14,10']))2          These worked with an older version of the code , amount of timesteps was 1400 and the wave moved in the positive x direction
 #
 #frequency_analysis(sim1)
