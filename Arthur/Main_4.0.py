@@ -363,7 +363,9 @@ class FDTD:
             self.maskQM_Ex = self.maskQM_Ex.astype(bool)
             self.maskQM_Ey = self.maskQM_Ey.astype(bool)
             # self.maskQM = self.maskQM.astype(bool)
+            self.boundarymaskQM = self.maskQM
             self.maskQM = ndimage.binary_erosion(self.maskQM)   # not touching BC, therefore stays 0
+            self.boundarymaskQM = np.logical_xor(self.boundarymaskQM,self.maskQM)
 
         for scatterer in self.scatterer_list:
             if scatterer.material == 'Drude':
@@ -753,8 +755,7 @@ class FDTD:
                     artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskPECy,cmap=binary_alpha,vmin=0,vmax=1))
                 if self.there_is_qm:
                     prob = np.sqrt(self.psi_r**2+self.psi_i**2)
-                    artists.append(Qax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=1))
-                    artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=1))
+                    artists.append(ax.contourf(self.x_edges[:-1],self.y_edges[:-1],self.boundarymaskQM,cmap=binary_alpha,vmin=0,vmax=1))
                     Qartists = [
                         Qax.text(0.5, 1.05, '%d/%d' % (it, nt),
                                 size=plt.rcParams["axes.titlesize"],
@@ -762,6 +763,7 @@ class FDTD:
                         Qax.pcolormesh(self.x_edges,self.y_edges,prob,cmap='seismic',)
                     ]
                     Qmovie.append(Qartists)
+                    Qartists.append(Qax.contourf(self.x_edges[:-1],self.y_edges[:-1],self.boundarymaskQM,cmap=binary_alpha,vmin=0,vmax=1))
                     #Qpos.append((np.average(np.multiply(self.x_edges,prob)),np.average(np.multiply(self.y_edges,prob))))
                     #Qmom.append(hbar*(np.average(np.multiply((self.psi[1:]-self.x_edges[1:])/self.dx,prob)),np.average(np.multiply((self.y_edges[1:]-self.y_edges[1:])/self.dy,prob))))
                     #QEkin.append(Qmom[-1][0]*Qmom[-1][1])
