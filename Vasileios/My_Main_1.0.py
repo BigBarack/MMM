@@ -759,26 +759,29 @@ class FDTD:
         ax.invert_yaxis()
         plt.show()
 
-    def observables(self):
+    def observables(self, which='all'):
         # probability density P= psi* x psi = Im^2 + Re^2
         prob = self.psi_r ** 2 + self.psi_i ** 2
         # print(f'test integral {np.sum(prob*self.dx_fine**2)}')      # integral probability in V
         dx2=self.dx_fine**2
-        x_exp = np.sum(prob * self.QM_rel_x * dx2)
-        y_exp = np.sum(prob * self.QM_rel_y * dx2)
-        print(f'<x> = {x_exp*1e9} nm, <y> = {y_exp*1e9} nm')
-        # dpsi/dx and dpsi/dy using central differences (collocated grid)
-        dpsi_r_dx = (self.psi_r[:, 2:] - self.psi_r[:, :-2]) / (2 * self.dx_fine)
-        dpsi_i_dx = (self.psi_i[:, 2:] - self.psi_i[:, :-2]) / (2 * self.dx_fine)
-        dpsi_r_dy = (self.psi_r[2:,:] - self.psi_r[:-2, :]) / (2 * self.dx_fine)
-        dpsi_i_dy = (self.psi_i[2:,:] - self.psi_i[:-2, :]) / (2 * self.dx_fine)
-        # integral <px>=integ[psi* (-jd/dx)psi ]dx^2 & same for y, integral -> sum
-        px_exp = hbar * np.sum((self.psi_r[:,1:-1] * dpsi_i_dx - self.psi_i[:,1:-1] * dpsi_r_dx)*dx2)
-        py_exp = hbar * np.sum((self.psi_r[1:-1,:] * dpsi_i_dy - self.psi_i[1:-1,:] * dpsi_r_dy)*dx2)
-        print(f'momentum: <px> = {px_exp} , <py> = {py_exp}')
-        # kinetic energy T= -hbar^2 / 2m * Laplacial
-        T_exp = - hbar**2/(2*self.m_eff) * np.sum((self.psi_r * laplacian_2D_4o(self.psi_r,self.dx_fine) +  self.psi_i * laplacian_2D_4o(self.psi_i,self.dx_fine))*dx2)
-        print(f'kinetic energy: <T> = {T_exp}')
+        if which in ['pos', 'all']:
+            x_exp = np.sum(prob * self.QM_rel_x * dx2)
+            y_exp = np.sum(prob * self.QM_rel_y * dx2)
+            print(f'<x> = {x_exp*1e9} nm, <y> = {y_exp*1e9} nm')
+        if which in ['momentum' , 'all']:
+            # dpsi/dx and dpsi/dy using central differences (collocated grid)
+            dpsi_r_dx = (self.psi_r[:, 2:] - self.psi_r[:, :-2]) / (2 * self.dx_fine)
+            dpsi_i_dx = (self.psi_i[:, 2:] - self.psi_i[:, :-2]) / (2 * self.dx_fine)
+            dpsi_r_dy = (self.psi_r[2:,:] - self.psi_r[:-2, :]) / (2 * self.dx_fine)
+            dpsi_i_dy = (self.psi_i[2:,:] - self.psi_i[:-2, :]) / (2 * self.dx_fine)
+            # integral <px>=integ[psi* (-jd/dx)psi ]dx^2 & same for y, integral -> sum
+            px_exp = hbar * np.sum((self.psi_r[:,1:-1] * dpsi_i_dx - self.psi_i[:,1:-1] * dpsi_r_dx)*dx2)
+            py_exp = hbar * np.sum((self.psi_r[1:-1,:] * dpsi_i_dy - self.psi_i[1:-1,:] * dpsi_r_dy)*dx2)
+            print(f'momentum: <px> = {px_exp} , <py> = {py_exp}')
+        if which in ['kinetic', 'all']:
+            # kinetic energy T= -hbar^2 / 2m * Laplacial
+            T_exp = - hbar**2/(2*self.m_eff) * np.sum((self.psi_r * laplacian_2D_4o(self.psi_r,self.dx_fine) +  self.psi_i * laplacian_2D_4o(self.psi_i,self.dx_fine))*dx2)
+            print(f'kinetic energy: <T> = {T_exp}')
 
 
 
