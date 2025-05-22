@@ -615,34 +615,36 @@ class FDTD:
 
             # Calculate Jx and Jy
             q = -q_e
-            # self.Jqx = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:])-self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:]))
-            # self.Jqy = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
-            # self.psi_i_old = self.psi_i
+            Jqx_sub = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
+            self.Jqx = np.pad((Jqx_sub[1:,:]+Jqx_sub[:-1,:])/2,((0,0),(1,0)),'constant',constant_values=(0))
+            Jqy_sub = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:])-self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:]))
+            self.Jqy = np.pad((Jqy_sub[:,1:]+Jqy_sub[:,:-1])/2,((1,0),(0,0)),'constant',constant_values=(0))
+            self.psi_i_old = self.psi_i
 
             # temporal average
-            psi_i_temp_avg = 0.5 * (self.psi_i + self.psi_i_old)                                #shape (Ny,Nx)
+            # psi_i_temp_avg = 0.5 * (self.psi_i + self.psi_i_old)                                #shape (Ny,Nx)
             # d/dx
-            dpsi_i_t_dx = (psi_i_temp_avg[:, 1:] - psi_i_temp_avg[:, :-1]) / self.dx_fine       #shape (Ny,Nx-1)
-            dpsi_r_dx = (self.psi_r[:,1:] - self.psi_r[:,:-1]) / self.dx_fine                   #shape (Ny,Nx-1)
+            # dpsi_i_t_dx = (psi_i_temp_avg[:, 1:] - psi_i_temp_avg[:, :-1]) / self.dx_fine       #shape (Ny,Nx-1)
+            # dpsi_r_dx = (self.psi_r[:,1:] - self.psi_r[:,:-1]) / self.dx_fine                   #shape (Ny,Nx-1)
             # vertical averaging of derivative to match Ex edges
-            dpsi_i_t_dx_avg = field_avg(dpsi_i_t_dx,'vertical')                             #shape (Ny-1,Nx-1)
-            dpsi_r_dx_avg = field_avg(dpsi_r_dx,'vertical')                                 #shape (Ny-1,Nx-1)
+            # dpsi_i_t_dx_avg = field_avg(dpsi_i_t_dx,'vertical')                             #shape (Ny-1,Nx-1)
+            # dpsi_r_dx_avg = field_avg(dpsi_r_dx,'vertical')                                 #shape (Ny-1,Nx-1)
             # psi_r & psi_i averaged horizontally and then vertically
-            psi_r_avg_h = field_avg(self.psi_r,'horizontal')                                #shape (Ny,Nx-1)
-            psi_r_avg   = field_avg(psi_r_avg_h,'vertical')                                 #shape (Ny-1,Nx-1)
-            psi_i_avg_h = field_avg(psi_i_temp_avg,'horizontal')
-            psi_i_avg   = field_avg(psi_i_avg_h,'vertical')
+            # psi_r_avg_h = field_avg(self.psi_r,'horizontal')                                #shape (Ny,Nx-1)
+            # psi_r_avg   = field_avg(psi_r_avg_h,'vertical')                                 #shape (Ny-1,Nx-1)
+            # psi_i_avg_h = field_avg(psi_i_temp_avg,'horizontal')
+            # psi_i_avg   = field_avg(psi_i_avg_h,'vertical')
             # Jx calc
-            self.Jqx[:,:-1] = N*q*hbar/(m_e*effect_m) * (psi_r_avg * dpsi_i_t_dx_avg - psi_i_avg * dpsi_r_dx_avg )
+            # self.Jqx[:,:-1] = N*q*hbar/(m_e*effect_m) * (psi_r_avg * dpsi_i_t_dx_avg - psi_i_avg * dpsi_r_dx_avg )
             # d/dy
-            dpsi_i_t_dy = (psi_i_temp_avg[1:,:] - psi_i_temp_avg[:-1,:]) / self.dx_fine       #shape (Ny-1,Nx)
-            dpsi_r_dy = (self.psi_r[1:,:] - self.psi_r[:-1,:]) / self.dx_fine                 #shape (Ny-1,Nx)
+            # dpsi_i_t_dy = (psi_i_temp_avg[1:,:] - psi_i_temp_avg[:-1,:]) / self.dx_fine       #shape (Ny-1,Nx)
+            # dpsi_r_dy = (self.psi_r[1:,:] - self.psi_r[:-1,:]) / self.dx_fine                 #shape (Ny-1,Nx)
             # horizontal avg of derivative to match Ey
-            dpsi_i_t_dy_avg = field_avg(dpsi_i_t_dy,'horizontal')                        #shape (Ny-1,Nx-1)
-            dpsi_r_dy_avg = field_avg(dpsi_r_dy,'horizontal')                            #shape (Ny-1,Nx-1)
+            # dpsi_i_t_dy_avg = field_avg(dpsi_i_t_dy,'horizontal')                        #shape (Ny-1,Nx-1)
+            # dpsi_r_dy_avg = field_avg(dpsi_r_dy,'horizontal')                            #shape (Ny-1,Nx-1)
             # Jy calc
-            self.Jqy[:-1,:] = N*q*hbar/(m_e*effect_m) * (psi_r_avg * dpsi_i_t_dy_avg - psi_i_avg * dpsi_r_dy_avg )
-            self.psi_i_old = self.psi_i
+            # self.Jqy[:-1,:] = N*q*hbar/(m_e*effect_m) * (psi_r_avg * dpsi_i_t_dy_avg - psi_i_avg * dpsi_r_dy_avg )
+            # self.psi_i_old = self.psi_i
 
         #
         self.update_observation_points()
@@ -1150,7 +1152,7 @@ def Run():
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     10,10,10000000,10000000000000)
         elif choice == '4':                                                                                                                                                        #omega was 50e14
-            return testing(15e-7 ,15e-7,1,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15, omega= 50e14, timesteps=1000)
+            return testing(15e-7 ,15e-7,1,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15, omega= 50e13, timesteps=1000)
         elif choice == '0':
             return Run()
 
