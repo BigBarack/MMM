@@ -52,13 +52,20 @@ def cross_average2Drray(arr):
     cross_avg = (padded[1:-1,1:-1] + padded[:-2,1:-1] + padded[2:,1:-1] + padded[1:-1,:-2] + padded[1:-1,2:] ) / 5
     return cross_avg
 
-def field_avg(field,axis):
+def field_avg(field,axis,pad=True):
+    #with padding, we match Ex_shapes(Ny-1,Nx)->Hz_shapes(Ny,Nx) , no padding is opposite
     if axis=='vertical':
-        padded = np.pad(field, ((1, 1), (0, 0)))
-        avg = 0.5 * (padded[1:,:] + padded[:-1,:])
+        if pad:
+            padded = np.pad(field, ((1, 1), (0, 0)))
+            avg = 0.5 * (padded[1:,:] + padded[:-1,:])
+        else:
+            avg = 0.5 * (field[1:,:] + field[:-1,:])
     elif axis=='horizontal':
-        padded = np.pad(field, ((0, 0), (1, 1)))
-        avg = 0.5 * (padded[:,1:] + padded[:,:-1])
+        if pad:
+            padded = np.pad(field, ((0, 0), (1, 1)))
+            avg = 0.5 * (padded[:,1:] + padded[:,:-1])
+        else:
+            avg = 0.5 * (field[:,1:] + field[:,:-1])
     return avg
 
 
@@ -294,6 +301,8 @@ class FDTD:
             self.maskQM_Ex = np.zeros_like(self.Ex)
             self.maskQM_Ey = np.zeros_like(self.Ey)
             self.maskQM = np.zeros_like(self.Hz)
+            self.QM_rel_x = np.zeros_like(self.Hz)
+            self.QM_rel_y = np.zeros_like(self.Hz)
 
         # generate mask
         self.mask_Hz = np.zeros_like(self.Hz)
@@ -372,6 +381,8 @@ class FDTD:
                     omega = scatterer.properties['omega']
                     self.get_V(xc,yc,r, m_eff, omega) # create each potential well
                     self.init_psi(xc,yc,scatterer.ID,m_eff,omega)
+                    self.QM_rel_x[self.mask_Hz==scatterer.ID] = self.Xc[self.mask_Hz==scatterer.ID] - xc
+                    self.QM_rel_y[self.mask_Hz==scatterer.ID] = self.Yc[self.mask_Hz==scatterer.ID] - yc
             self.maskQM_Ex = self.maskQM_Ex.astype(bool)
             self.maskQM_Ey = self.maskQM_Ey.astype(bool)
             # self.maskQM = self.maskQM.astype(bool)
@@ -437,6 +448,11 @@ class FDTD:
 
         self.update_observation_points()
 
+        # print(f'current dt {self.dt}')
+        # qm_dt= 2 / (( 8*hbar/(3*m_e*0.15) * (2/self.dx_fine**2)) + (1/hbar * np.max(self.V) ))
+        # print(f'qm dt : {qm_dt}') # STABILITY
+
+
     def in_refined_region(self, pos:float , axis:str):
         """
         called on FDTD because it needs dx values and scatterer list. called twice when making grid
@@ -480,9 +496,8 @@ class FDTD:
         :param w: omega
         :return: updates the psi_r with local wavefunction
         """
-
         a = np.sqrt(m * w / hbar)
-        print(f'Gaussian width sigma = {1/a}')
+        # print(f'Gaussian width sigma = {1/a}')
         x_rel = self.Xc - xc
         y_rel = self.Yc - yc
         mask = ndimage.binary_erosion(self.mask_Hz == ID)   # local e-well mask, not touching the boundary
@@ -493,6 +508,9 @@ class FDTD:
         norm = np.sqrt(np.sum(psi_local[mask]**2 * self.dx_fine**2))
         psi_local /= norm
         self.psi_r[mask] = psi_local[mask]
+        psi_norm = np.sqrt(np.sum(self.psi_r**2 * self.dx_fine**2))
+        # print(psi_norm)
+
 
 
 
@@ -600,46 +618,60 @@ class FDTD:
             ex = field_avg(self.Ex,'vertical')
             ey = field_avg(self.Ey, 'horizontal')
 
+            # self.psi_r[self.maskQM] -= self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM]
+            #                                                    + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_i[self.maskQM]
+            #                                                    + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_i[self.maskQM]
+            #                                                    - self.V[self.maskQM] * self.psi_i[self.maskQM] )
+            #
+            # self.psi_i[self.maskQM] += self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM]
+            #                                                    + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_r[self.maskQM]
+            #                                                    + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_r[self.maskQM]
+            #                                                    - self.V[self.maskQM] * self.psi_r[self.maskQM] )
+            #
             self.psi_r[self.maskQM] -= self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM]
-                                                               + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_i[self.maskQM]
-                                                               + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_i[self.maskQM]
+                                                               + q_e * ex[self.maskQM] * self.QM_rel_x[self.maskQM] * self.psi_i[self.maskQM]
+                                                               + q_e * ey[self.maskQM] * self.QM_rel_y[self.maskQM] * self.psi_i[self.maskQM]
                                                                - self.V[self.maskQM] * self.psi_i[self.maskQM] )
 
             self.psi_i[self.maskQM] += self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM]
-                                                               + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_r[self.maskQM]
-                                                               + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_r[self.maskQM]
+                                                               + q_e * ex[self.maskQM] * self.QM_rel_x[self.maskQM] * self.psi_r[self.maskQM]
+                                                               + q_e * ey[self.maskQM] * self.QM_rel_y[self.maskQM] * self.psi_r[self.maskQM]
                                                                - self.V[self.maskQM] * self.psi_r[self.maskQM] )
+
 
             # Calculate Jx and Jy
             q = -q_e
-            # self.Jqx = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:])-self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:]))
-            # self.Jqy = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
+
+            # Jqx_sub = N*q*hbar/(2*m_e*effect_m*self.dx_fine) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
+            # self.Jqx = np.pad((Jqx_sub[1:,:]+Jqx_sub[:-1,:])/2,((0,0),(1,0)),'constant',constant_values=0)
+            # Jqy_sub = N*q*hbar/(2*m_e*effect_m*self.dx_fine) * (self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:])-self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:]))
+            # self.Jqy = np.pad((Jqy_sub[:,1:]+Jqy_sub[:,:-1])/2,((1,0),(0,0)),'constant',constant_values=0)
             # self.psi_i_old = self.psi_i
 
             # temporal average
-            psi_i_temp_avg = 0.5 * (self.psi_i + self.psi_i_old)                                #shape (Ny,Nx)
-            # d/dx
-            dpsi_i_t_dx = (psi_i_temp_avg[:, 1:] - psi_i_temp_avg[:, :-1]) / self.dx_fine       #shape (Ny,Nx-1)
-            dpsi_r_dx = (self.psi_r[:,1:] - self.psi_r[:,:-1]) / self.dx_fine                   #shape (Ny,Nx-1)
-            # vertical averaging of derivative to match Ex edges
-            dpsi_i_t_dx_avg = field_avg(dpsi_i_t_dx,'vertical')                             #shape (Ny-1,Nx-1)
-            dpsi_r_dx_avg = field_avg(dpsi_r_dx,'vertical')                                 #shape (Ny-1,Nx-1)
-            # psi_r & psi_i averaged horizontally and then vertically
-            psi_r_avg_h = field_avg(self.psi_r,'horizontal')                                #shape (Ny,Nx-1)
-            psi_r_avg   = field_avg(psi_r_avg_h,'vertical')                                 #shape (Ny-1,Nx-1)
-            psi_i_avg_h = field_avg(psi_i_temp_avg,'horizontal')
-            psi_i_avg   = field_avg(psi_i_avg_h,'vertical')
-            # Jx calc
-            self.Jqx[:,:-1] = N*q*hbar/(m_e*effect_m) * (psi_r_avg * dpsi_i_t_dx_avg - psi_i_avg * dpsi_r_dx_avg )
-            # d/dy
-            dpsi_i_t_dy = (psi_i_temp_avg[1:,:] - psi_i_temp_avg[:-1,:]) / self.dx_fine       #shape (Ny-1,Nx)
-            dpsi_r_dy = (self.psi_r[1:,:] - self.psi_r[:-1,:]) / self.dx_fine                 #shape (Ny-1,Nx)
-            # horizontal avg of derivative to match Ey
-            dpsi_i_t_dy_avg = field_avg(dpsi_i_t_dy,'horizontal')                        #shape (Ny-1,Nx-1)
-            dpsi_r_dy_avg = field_avg(dpsi_r_dy,'horizontal')                            #shape (Ny-1,Nx-1)
-            # Jy calc
-            self.Jqy[:-1,:] = N*q*hbar/(m_e*effect_m) * (psi_r_avg * dpsi_i_t_dy_avg - psi_i_avg * dpsi_r_dy_avg )
-            self.psi_i_old = self.psi_i
+            # psi_i_temp_avg = 0.5 * (self.psi_i + self.psi_i_old)                                #shape (Ny,Nx)
+            # # d/dx
+            # dpsi_i_t_dx = (psi_i_temp_avg[:, 1:] - psi_i_temp_avg[:, :-1]) / self.dx_fine       #shape (Ny,Nx-1)
+            # dpsi_r_dx = (self.psi_r[:,1:] - self.psi_r[:,:-1]) / self.dx_fine                   #shape (Ny,Nx-1)
+            # # vertical averaging of derivative to match Ex edges
+            # dpsi_i_t_dx_avg = field_avg(dpsi_i_t_dx,'vertical',False)                             #shape (Ny-1,Nx-1)
+            # dpsi_r_dx_avg = field_avg(dpsi_r_dx,'vertical',False)                                 #shape (Ny-1,Nx-1)
+            # # psi_r & psi_i averaged horizontally and then vertically
+            # psi_r_avg_h = field_avg(self.psi_r,'horizontal',False)                                #shape (Ny,Nx-1)
+            # psi_r_avg   = field_avg(psi_r_avg_h,'vertical',False)                                 #shape (Ny-1,Nx-1)
+            # psi_i_avg_h = field_avg(psi_i_temp_avg,'horizontal',False)
+            # psi_i_avg   = field_avg(psi_i_avg_h,'vertical',False)
+            # # Jx calc
+            # self.Jqx[:,:-1] = N*q*hbar/(m_e*effect_m) * (psi_r_avg * dpsi_i_t_dx_avg - psi_i_avg * dpsi_r_dx_avg )
+            # # d/dy
+            # dpsi_i_t_dy = (psi_i_temp_avg[1:,:] - psi_i_temp_avg[:-1,:]) / self.dx_fine       #shape (Ny-1,Nx)
+            # dpsi_r_dy = (self.psi_r[1:,:] - self.psi_r[:-1,:]) / self.dx_fine                 #shape (Ny-1,Nx)
+            # # horizontal avg of derivative to match Ey
+            # dpsi_i_t_dy_avg = field_avg(dpsi_i_t_dy,'horizontal',False)                        #shape (Ny-1,Nx-1)
+            # dpsi_r_dy_avg = field_avg(dpsi_r_dy,'horizontal',False)                            #shape (Ny-1,Nx-1)
+            # # Jy calc
+            # self.Jqy[:-1,:] = N*q*hbar/(m_e*effect_m) * (psi_r_avg * dpsi_i_t_dy_avg - psi_i_avg * dpsi_r_dy_avg )
+            # self.psi_i_old = self.psi_i
 
 
 
@@ -1103,7 +1135,7 @@ def Run():
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     10,10,10000000,10000000000000)
         elif choice == '4':                                                                                                                                                        #omega was 50e14
-            return testing(15e-7 ,15e-7,1,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15, omega= 50e14, timesteps=1000)
+            return testing(15e-7 ,15e-7,1,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=1000)
         elif choice == '0':
             return Run()
 
@@ -1366,6 +1398,10 @@ def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
     plt.axis('equal')
     plt.tight_layout()
     plt.show()
+
+
+psi_norm = np.sqrt(np.sum((sim.psi_r ** 2 + sim.psi_i**2) * sim.dx_fine ** 2))
+print(f'Norm of the wavefunction after the iterations: {psi_norm}')
 
 # plot_potential(sim.V, sim.Xc, sim.Yc)
 
