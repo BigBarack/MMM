@@ -701,7 +701,14 @@ class FDTD:
         Qax.set_ylabel('(m)')
         Qax.invert_yaxis()
         plt.axis('equal')
+
+        posfig, posax = plt.subplots()
         Qpos = []
+        posax.set_xlabel('(m)')
+        posax.set_ylabel('(m)')
+        plt.axis('equal')
+
+
         Qmom = []
         QEkin = []
 
@@ -711,6 +718,14 @@ class FDTD:
         alphas = np.linspace(0.0, 1.0, 256)
         binary[:, -1] = alphas
         binary_alpha = ListedColormap(binary)
+
+        clear()
+        print(f"Lx = {sim.Lx}, Ly = {sim.Ly}")
+        print(f"dt = {sim.dt}, nt = {nt}, dx = {sim.dx_fine}")
+        print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
+        print(f"Grid size = {sim.Nx} x {sim.Ny}")
+        if self.there_is_qm:
+            print(f"V max: {np.max(sim.V)}, T_osc: {2*np.pi / 50e14 }")
 
         for it in tqdm(range(0,nt), desc='Simulating'):
             t = (it - 1) * self.dt
@@ -764,7 +779,7 @@ class FDTD:
                     ]
                     Qmovie.append(Qartists)
                     Qartists.append(Qax.contourf(self.x_edges[:-1],self.y_edges[:-1],self.boundarymaskQM,cmap=binary_alpha,vmin=0,vmax=1))
-                    #Qpos.append((np.average(np.multiply(self.x_edges,prob)),np.average(np.multiply(self.y_edges,prob))))
+                    Qpos.append((np.average(np.multiply(self.Xc,prob)),np.average(np.multiply(self.Yc,prob))))
                     #Qmom.append(hbar*(np.average(np.multiply((self.psi[1:]-self.x_edges[1:])/self.dx,prob)),np.average(np.multiply((self.y_edges[1:]-self.y_edges[1:])/self.dy,prob))))
                     #QEkin.append(Qmom[-1][0]*Qmom[-1][1])
                 movie.append(artists)
@@ -772,32 +787,46 @@ class FDTD:
         print('Iterations done')
         endtime = time.time()
         if visu:
-            anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
-            Qanim = ArtistAnimation(Qfig, Qmovie, interval=10, repeat_delay=1000, blit=True)
-
-            if saving:
-                anim.save('H.gif', writer='pillow')
-                Qanim.save('Psi.gif', writer='pillow')
             if self.there_is_qm:
                 while True:
-                    choice = input("Which animation to view? Type 'EM', 'QM' or 'exit': ")
-                    if choice == 'EM':
-                        plt.close(Qfig)
+                    plt.close()
+                    clear()
+                    choice = input("Which animation or plot to view?\n" \
+                    "EM animation:      1\n" \
+                    "QM animation:      2\n"
+                    "Position plot:     3\n"
+                    "Momentum plot:     4\n"
+                    "Kinetic Energy:    5\n"
+                    "\n"
+                    "Exit:              0\n")
+                    if choice == '1':
                         anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
+                        plt.close()
                         fig.show()
                         plt.show()
-                    elif choice == 'QM':
-                        plt.close(fig)
+                    elif choice == '2':
                         Qanim = ArtistAnimation(Qfig, Qmovie, interval=10, repeat_delay=1000, blit=True)
+                        plt.close()
                         Qfig.show()
                         plt.show()
-                    elif choice.lower() == 'exit':
+                    elif choice == '3':
+                        plt.close()
+                        posax.plot(*zip(*Qpos))
+                        plt.close()
+                        posfig.show()
+                        plt.show()
+                    elif choice == '0':
                         break
             else:
+                plt.close()
                 anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
-                plt.close(Qfig)
+                plt.close()
                 fig.show()
-                plt.show()
+                plt.show() 
+            if saving:
+                anim.save('H.gif', writer='pillow')
+                if self.there_is_qm:
+                    Qanim.save('Psi.gif', writer='pillow')
         return endtime
 
 
@@ -1307,12 +1336,6 @@ def compare_numerical_analytical(sim_object):
 #                    10,10,10000000,10000000000000,['6,10','14,10']))
 Lx, Ly, PW, scatter_list, obs_dict_tuples, nt = Run()
 sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
-
-print(f"Lx = {sim.Lx}, Ly = {sim.Ly}")
-print(f"dt = {sim.dt}, nt = {nt}, dx = {sim.dx_fine}")
-print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
-print(f"Grid size = {sim.Nx} x {sim.Ny}")
-print(f"V max: {np.max(sim.V)}, T_osc: {2*np.pi / 50e14 }")
 
 import time
 start = time.time()
