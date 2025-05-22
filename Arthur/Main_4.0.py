@@ -139,7 +139,7 @@ class Scatterer:
 
 class FDTD:
     def __init__(self, Lx:float , Ly:float , PW:dict , scatterer_list:list , observation_points:dict ):
-        self.m_eff = m_e # temporary definition here
+        self.m_eff = m_e*0.3 # temporary definition here
 
         # sim area
         self.Lx = Lx * 0.01
@@ -487,7 +487,7 @@ class FDTD:
         potential = 0.5 * m * w**2 * (x_rel**2 + y_rel**2)
         self.V[mask] = potential[mask]
 
-    def init_psi(self,xc,yc,ID,m,w, n1=0, n2=0, x_shift=2,y_shift=0):
+    def init_psi(self,xc,yc,ID,m,w, n1=0, n2=0, x_shift=6,y_shift=0):
         """
         Initializes psi for n1=n2=0  coherent state of potential (stationary if no shift applied)
         :param xc: x of potential center
@@ -498,7 +498,8 @@ class FDTD:
         :return: updates the psi_r with local wavefunction
         """
         a = np.sqrt(m * w / hbar)
-        # print(f'Gaussian width sigma = {1/a}')
+        print(f'this is the shift: {x_shift * np.sqrt(2) / a *1e9}\n')
+        print(f'Gaussian width sigma = {1/a}\n')
         x_rel = self.Xc - xc
         y_rel = self.Yc - yc
         mask = ndimage.binary_erosion(self.mask_Hz == ID)   # local e-well mask, not touching the boundary
@@ -510,7 +511,7 @@ class FDTD:
         psi_local /= norm
         self.psi_r[mask] = psi_local[mask]
         psi_norm = np.sqrt(np.sum(self.psi_r**2 * self.dx_fine**2))
-        # print(psi_norm)
+        print(psi_norm)
 
 
 
@@ -530,9 +531,9 @@ class FDTD:
                     self.dt / epsilon_0) * np.multiply(self.PML_EyMask, self.Ey)
                     # - self.dt / self.epsilon_yavg * self.Jqy[:,:]                                 # masking j-term is not necessary as long as psi is masked (dirichlet-BC)
 
-        #if self.there_is_qm:
-        #    self.Ex[self.maskQM_Ex] -= (self.dt / epsilon_0) * np.average(self.Jqx[self.maskQM_Ex])
-        #    self.Ey[self.maskQM_Ey] -= (self.dt / epsilon_0) * np.average(self.Jqy[self.maskQM_Ey])
+        if self.there_is_qm:
+            self.Ex[self.maskQM_Ex] -= (self.dt / epsilon_0) * np.average(self.Jqx[self.maskQM_Ex])
+            self.Ey[self.maskQM_Ey] -= (self.dt / epsilon_0) * np.average(self.Jqy[self.maskQM_Ey])
 
         if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
             for scatterer in self.scatterer_list:
@@ -1142,7 +1143,7 @@ def Run():
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     10,10,10000000,10000000000000)
         elif choice == '4':                                                                                                                                                        #omega was 50e14
-            return testing(15e-7 ,15e-7,0,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15, omega= 50e13, timesteps=10000)
+            return testing(15e-7 ,15e-7,0,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=10000)
         elif choice == '0':
             return Run()
 
