@@ -515,9 +515,9 @@ class FDTD:
                     self.dt / epsilon_0) * np.multiply(self.PML_EyMask, self.Ey)
                     # - self.dt / self.epsilon_yavg * self.Jqy[:,:]                                 # masking j-term is not necessary as long as psi is masked (dirichlet-BC)
 
-        if self.there_is_qm:
-            self.Ex[self.maskQM_Ex] -= (self.dt / epsilon_0) * self.Jqx[self.maskQM_Ex]
-            self.Ey[self.maskQM_Ey] -= (self.dt / epsilon_0) * self.Jqy[self.maskQM_Ey]
+        #if self.there_is_qm:
+            #self.Ex[self.maskQM_Ex] -= (self.dt / epsilon_0) * self.Jqx[self.maskQM_Ex]
+            #self.Ey[self.maskQM_Ey] -= (self.dt / epsilon_0) * self.Jqy[self.maskQM_Ey]
 
         if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
             for scatterer in self.scatterer_list:
@@ -615,9 +615,9 @@ class FDTD:
 
             # Calculate Jx and Jy
             q = -q_e
-            Jqx_sub = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
+            Jqx_sub = N*q*hbar/(2*m_e*effect_m) * 1/self.DX_Ey * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
             self.Jqx = np.pad((Jqx_sub[1:,:]+Jqx_sub[:-1,:])/2,((0,0),(1,0)),'constant',constant_values=(0))
-            Jqy_sub = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:])-self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:]))
+            Jqy_sub = N*q*hbar/(2*m_e*effect_m) * 1/self.DY_Ex * (self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:])-self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:]))
             self.Jqy = np.pad((Jqy_sub[:,1:]+Jqy_sub[:,:-1])/2,((1,0),(0,0)),'constant',constant_values=(0))
             self.psi_i_old = self.psi_i
 
@@ -824,8 +824,9 @@ class FDTD:
                     Qmovie.append(Qartists)
                     Qartists.append(Qax.contourf(self.x_edges[:-1],self.y_edges[:-1],self.boundarymaskQM,cmap=binary_alpha,vmin=0,vmax=1))
                     Qpos.append((np.average(np.multiply(self.Xc,prob)),np.average(np.multiply(self.Yc,prob))))
-                    Qmom.append((np.average(np.multiply(hbar*(self.psi_r[1:]-self.psi_r[:-1])/self.DX_Hz[:-1],hbar*(self.psi_i[1:]-self.psi_i[:-1])/self.DX_Hz[:-1])),np.average(np.multiply(hbar*(self.psi_r[:,1:]-self.psi_r[:,:-1])/self.DY_Hz[:,:-1],hbar*(self.psi_i[:,1:]-self.psi_i[:,:-1])/self.DY_Hz[:,:-1]))))
-                    QEkin.append(Qmom[-1][0]*Qmom[-1][1]/(2*self.m_eff))
+                    Qmom.append((np.average(np.sqrt(np.add(np.square(hbar*(self.psi_r[1:]-self.psi_r[:-1])/self.DX_Hz[:-1]),np.square(hbar*(self.psi_i[1:]-self.psi_i[:-1])/self.DX_Hz[:-1])))),
+                                 np.average(np.sqrt(np.add(np.square(hbar*(self.psi_r[:,1:]-self.psi_r[:,:-1])/self.DY_Hz[:,:-1]),np.square(hbar*(self.psi_i[:,1:]-self.psi_i[:,:-1])/self.DY_Hz[:,:-1]))))))
+                    QEkin.append((np.square(Qmom[-1][0])+np.square(Qmom[-1][1]))/(2*self.m_eff))
                 movie.append(artists)
 
         print('Iterations done')
