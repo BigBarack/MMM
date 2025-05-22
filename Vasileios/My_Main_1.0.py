@@ -776,6 +776,10 @@ class FDTD:
         px_exp = hbar * np.sum((self.psi_r[:,1:-1] * dpsi_i_dx - self.psi_i[:,1:-1] * dpsi_r_dx)*dx2)
         py_exp = hbar * np.sum((self.psi_r[1:-1,:] * dpsi_i_dy - self.psi_i[1:-1,:] * dpsi_r_dy)*dx2)
         print(f'momentum: <px> = {px_exp} , <py> = {py_exp}')
+        # kinetic energy T= -hbar^2 / 2m * Laplacial
+        T_exp = - hbar**2/(2*self.m_eff) * np.sum((self.psi_r * laplacian_2D_4o(self.psi_r,self.dx_fine) +  self.psi_i * laplacian_2D_4o(self.psi_i,self.dx_fine))*dx2)
+        print(f'kinetic energy: <T> = {T_exp}')
+
 
 
 
