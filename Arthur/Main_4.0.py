@@ -749,16 +749,16 @@ class FDTD:
                     movie.append(self.Hz.copy())
 
                 if self.there_is_qm:
-                    prob = np.sqrt(self.psi_r**2 + self.psi_i**2)
+                    prob = self.psi_r**2 + self.psi_i**2
                     Qmovie.append(prob.copy())
 
-                    Qpos.append((np.sum(self.Xc * prob * self.dx_fine),
-                                np.sum(self.Yc * prob * self.dx_fine)))
+                    Qpos.append((np.sum(self.QM_rel_x * prob * self.dx_fine**2),
+                                np.sum(self.QM_rel_y * prob * self.dx_fine**2)))
 
-                    px = -hbar * self.dx_fine * np.sum(((self.psi_r[:, :-1] + self.psi_r[:, 1:]) / 2 * (self.psi_i[:, 1:] - self.psi_i[:, :-1]) / self.dx_fine)
+                    px = -hbar * self.dx_fine**2 * np.sum(((self.psi_r[:, :-1] + self.psi_r[:, 1:]) / 2 * (self.psi_i[:, 1:] - self.psi_i[:, :-1]) / self.dx_fine)
                         - ((self.psi_i[:, :-1] + self.psi_i[:, 1:]) / 2 * (self.psi_r[:, 1:] - self.psi_r[:, :-1]) / self.dx_fine))
 
-                    py = -hbar * self.dx_fine * np.sum(((self.psi_r[1:, :] + self.psi_r[:-1, :]) / 2 * (self.psi_i[:-1, :] - self.psi_i[1:, :]) / self.dx_fine)
+                    py = -hbar * self.dx_fine**2 * np.sum(((self.psi_r[1:, :] + self.psi_r[:-1, :]) / 2 * (self.psi_i[:-1, :] - self.psi_i[1:, :]) / self.dx_fine)
                         - ((self.psi_i[1:, :] + self.psi_i[:-1, :]) / 2 * (self.psi_r[:-1, :] - self.psi_r[1:, :]) / self.dx_fine))
 
                     Qmom.append((px, py))
