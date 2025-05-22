@@ -301,6 +301,8 @@ class FDTD:
             self.maskQM_Ex = np.zeros_like(self.Ex)
             self.maskQM_Ey = np.zeros_like(self.Ey)
             self.maskQM = np.zeros_like(self.Hz)
+            self.QM_rel_x = np.zeros_like(self.Hz)
+            self.QM_rel_y = np.zeros_like(self.Hz)
 
         # generate mask
         self.mask_Hz = np.zeros_like(self.Hz)
@@ -379,6 +381,8 @@ class FDTD:
                     omega = scatterer.properties['omega']
                     self.get_V(xc,yc,r, m_eff, omega) # create each potential well
                     self.init_psi(xc,yc,scatterer.ID,m_eff,omega)
+                    self.QM_rel_x[self.mask_Hz==scatterer.ID] = self.Xc[self.mask_Hz==scatterer.ID] - xc
+                    self.QM_rel_y[self.mask_Hz==scatterer.ID] = self.Yc[self.mask_Hz==scatterer.ID] - yc
             self.maskQM_Ex = self.maskQM_Ex.astype(bool)
             self.maskQM_Ey = self.maskQM_Ey.astype(bool)
             # self.maskQM = self.maskQM.astype(bool)
@@ -444,6 +448,11 @@ class FDTD:
 
         self.update_observation_points()
 
+        # print(f'current dt {self.dt}')
+        # qm_dt= 2 / (( 8*hbar/(3*m_e*0.15) * (2/self.dx_fine**2)) + (1/hbar * np.max(self.V) ))
+        # print(f'qm dt : {qm_dt}') # STABILITY
+
+
     def in_refined_region(self, pos:float , axis:str):
         """
         called on FDTD because it needs dx values and scatterer list. called twice when making grid
@@ -487,9 +496,8 @@ class FDTD:
         :param w: omega
         :return: updates the psi_r with local wavefunction
         """
-
         a = np.sqrt(m * w / hbar)
-        print(f'Gaussian width sigma = {1/a}')
+        # print(f'Gaussian width sigma = {1/a}')
         x_rel = self.Xc - xc
         y_rel = self.Yc - yc
         mask = ndimage.binary_erosion(self.mask_Hz == ID)   # local e-well mask, not touching the boundary
@@ -500,6 +508,9 @@ class FDTD:
         norm = np.sqrt(np.sum(psi_local[mask]**2 * self.dx_fine**2))
         psi_local /= norm
         self.psi_r[mask] = psi_local[mask]
+        psi_norm = np.sqrt(np.sum(self.psi_r**2 * self.dx_fine**2))
+        # print(psi_norm)
+
 
 
 
@@ -607,24 +618,35 @@ class FDTD:
             ex = field_avg(self.Ex,'vertical')
             ey = field_avg(self.Ey, 'horizontal')
 
+            # self.psi_r[self.maskQM] -= self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM]
+            #                                                    + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_i[self.maskQM]
+            #                                                    + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_i[self.maskQM]
+            #                                                    - self.V[self.maskQM] * self.psi_i[self.maskQM] )
+            #
+            # self.psi_i[self.maskQM] += self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM]
+            #                                                    + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_r[self.maskQM]
+            #                                                    + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_r[self.maskQM]
+            #                                                    - self.V[self.maskQM] * self.psi_r[self.maskQM] )
+            #
             self.psi_r[self.maskQM] -= self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM]
-                                                               + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_i[self.maskQM]
-                                                               + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_i[self.maskQM]
+                                                               + q_e * ex[self.maskQM] * self.QM_rel_x[self.maskQM] * self.psi_i[self.maskQM]
+                                                               + q_e * ey[self.maskQM] * self.QM_rel_y[self.maskQM] * self.psi_i[self.maskQM]
                                                                - self.V[self.maskQM] * self.psi_i[self.maskQM] )
 
             self.psi_i[self.maskQM] += self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM]
-                                                               + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_r[self.maskQM]
-                                                               + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_r[self.maskQM]
+                                                               + q_e * ex[self.maskQM] * self.QM_rel_x[self.maskQM] * self.psi_r[self.maskQM]
+                                                               + q_e * ey[self.maskQM] * self.QM_rel_y[self.maskQM] * self.psi_r[self.maskQM]
                                                                - self.V[self.maskQM] * self.psi_r[self.maskQM] )
+
 
             # Calculate Jx and Jy
             q = -q_e
 
-            Jqx_sub = N*q*hbar/(2*m_e*effect_m*self.dx_fine) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
-            self.Jqx = np.pad((Jqx_sub[1:,:]+Jqx_sub[:-1,:])/2,((0,0),(1,0)),'constant',constant_values=0)
-            Jqy_sub = N*q*hbar/(2*m_e*effect_m*self.dx_fine) * (self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:])-self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:]))
-            self.Jqy = np.pad((Jqy_sub[:,1:]+Jqy_sub[:,:-1])/2,((1,0),(0,0)),'constant',constant_values=0)
-            self.psi_i_old = self.psi_i
+            # Jqx_sub = N*q*hbar/(2*m_e*effect_m*self.dx_fine) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
+            # self.Jqx = np.pad((Jqx_sub[1:,:]+Jqx_sub[:-1,:])/2,((0,0),(1,0)),'constant',constant_values=0)
+            # Jqy_sub = N*q*hbar/(2*m_e*effect_m*self.dx_fine) * (self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:])-self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:]))
+            # self.Jqy = np.pad((Jqy_sub[:,1:]+Jqy_sub[:,:-1])/2,((1,0),(0,0)),'constant',constant_values=0)
+            # self.psi_i_old = self.psi_i
 
             # temporal average
             # psi_i_temp_avg = 0.5 * (self.psi_i + self.psi_i_old)                                #shape (Ny,Nx)
@@ -1376,6 +1398,10 @@ def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
     plt.axis('equal')
     plt.tight_layout()
     plt.show()
+
+
+psi_norm = np.sqrt(np.sum((sim.psi_r ** 2 + sim.psi_i**2) * sim.dx_fine ** 2))
+print(f'Norm of the wavefunction after the iterations: {psi_norm}')
 
 # plot_potential(sim.V, sim.Xc, sim.Yc)
 
