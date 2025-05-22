@@ -150,16 +150,28 @@ class FDTD:
             self.fc = PW['fc']
 
         # gridding
-        self.dx_coarse = self.lmin / 10
-        self.dx_inter1 = self.dx_coarse / ( 2 ** (1/3) )
-        self.dx_inter2 = self.dx_inter1 / ( 2 ** (1/3) )
-        self.dx_fine = self.lmin / 20
         self.scatterer_list = scatterer_list
         self.observation_points = observation_points
         self.there_is_Drude = any([ scat.material == 'Drude' for scat in scatterer_list])
         self.there_is_PEC = any([scat.material == 'PEC' for scat in scatterer_list])
         self.there_is_PMC = any([scat.material == 'PMC' for scat in scatterer_list])
         self.there_is_qm = any([scat.material == 'e' for scat in scatterer_list])
+        self.dx_coarse = self.lmin / 10
+        if self.there_is_qm:
+            # decouple source from spatial discretization, override with predetermined values
+            # simple first, if works ok, automate with number of cells wanted in q.dot (well)
+            self.dx_coarse = 0.1e-9
+            print(f'previous dt: {self.dt}')
+            new_dt = (self.dx_coarse / 2 )/ (c * np.sqrt(2))
+            print(f'new dx leads to maximum dt: {new_dt}')
+            self.dt = new_dt
+            self.tc = 3 * self.s_pulse
+        self.dx_inter1 = self.dx_coarse / ( 2 ** (1/3) )
+        self.dx_inter2 = self.dx_inter1 / ( 2 ** (1/3) )
+        self.dx_fine = self.dx_coarse / 2
+
+
+
 
         # PML
         self.PML_n = 15
@@ -361,7 +373,6 @@ class FDTD:
                     omega = scatterer.properties['omega']
                     self.get_V(xc,yc,r, self.m_eff, omega) # create each potential well
                     self.init_psi(xc,yc,scatterer.ID,self.m_eff,omega)
-                    # self.psi_r[81,81]=1   #was a test initialization
             self.maskQM_Ex = self.maskQM_Ex.astype(bool)
             self.maskQM_Ey = self.maskQM_Ey.astype(bool)
             # self.maskQM = self.maskQM.astype(bool)
@@ -393,7 +404,7 @@ class FDTD:
         self.TFSFhright[tfi:-tfi , -tfi - 1] = 1
 
         self.TFSFeleft[tfi:-tfi , tfi-1] = 1
-        self.TFSFeright[tfi:-tfi, -tfi] = 1           #ISSUES HERE
+        self.TFSFeright[tfi:-tfi, -tfi] = 1          
 
         self.TFSFeup[tfi-1, tfi:-tfi ] = 1
         self.TFSFedown[-tfi, tfi:-tfi] = 1
@@ -505,10 +516,7 @@ class FDTD:
                     # - self.dt / self.epsilon_yavg * self.Jqy[:,:]                                 # masking j-term is not necessary as long as psi is masked (dirichlet-BC)
 
         if self.there_is_qm:
-            # Qmaskx = self.mask_Ex == 1
-            # Qmasky = self.mask_Ey == 1
             self.Ex[self.maskQM_Ex] -= (self.dt / epsilon_0) * self.Jqx[self.maskQM_Ex]
-            # self.Ey[self.maskQM_Ey] -= (self.dt / epsilon_0) * self.Jqy[np.pad(Qmaskx,((0,1),(0,0)))[:,:-1]]
             self.Ey[self.maskQM_Ey] -= (self.dt / epsilon_0) * self.Jqy[self.maskQM_Ey]
 
         if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
@@ -607,8 +615,33 @@ class FDTD:
 
             # Calculate Jx and Jy
             q = -q_e
-            self.Jqx = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:])-self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:]))
-            self.Jqy = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
+            # self.Jqx = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:])-self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:]))
+            # self.Jqy = N*q*hbar/(2*m_e*effect_m) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
+            # self.psi_i_old = self.psi_i
+
+            # temporal average
+            psi_i_temp_avg = 0.5 * (self.psi_i + self.psi_i_old)                                #shape (Ny,Nx)
+            # d/dx
+            dpsi_i_t_dx = (psi_i_temp_avg[:, 1:] - psi_i_temp_avg[:, :-1]) / self.dx_fine       #shape (Ny,Nx-1)
+            dpsi_r_dx = (self.psi_r[:,1:] - self.psi_r[:,:-1]) / self.dx_fine                   #shape (Ny,Nx-1)
+            # vertical averaging of derivative to match Ex edges
+            dpsi_i_t_dx_avg = field_avg(dpsi_i_t_dx,'vertical')                             #shape (Ny-1,Nx-1)
+            dpsi_r_dx_avg = field_avg(dpsi_r_dx,'vertical')                                 #shape (Ny-1,Nx-1)
+            # psi_r & psi_i averaged horizontally and then vertically
+            psi_r_avg_h = field_avg(self.psi_r,'horizontal')                                #shape (Ny,Nx-1)
+            psi_r_avg   = field_avg(psi_r_avg_h,'vertical')                                 #shape (Ny-1,Nx-1)
+            psi_i_avg_h = field_avg(psi_i_temp_avg,'horizontal')
+            psi_i_avg   = field_avg(psi_i_avg_h,'vertical')
+            # Jx calc
+            self.Jqx[:,:-1] = N*q*hbar/(m_e*effect_m) * (psi_r_avg * dpsi_i_t_dx_avg - psi_i_avg * dpsi_r_dx_avg )
+            # d/dy
+            dpsi_i_t_dy = (psi_i_temp_avg[1:,:] - psi_i_temp_avg[:-1,:]) / self.dx_fine       #shape (Ny-1,Nx)
+            dpsi_r_dy = (self.psi_r[1:,:] - self.psi_r[:-1,:]) / self.dx_fine                 #shape (Ny-1,Nx)
+            # horizontal avg of derivative to match Ey
+            dpsi_i_t_dy_avg = field_avg(dpsi_i_t_dy,'horizontal')                        #shape (Ny-1,Nx-1)
+            dpsi_r_dy_avg = field_avg(dpsi_r_dy,'horizontal')                            #shape (Ny-1,Nx-1)
+            # Jy calc
+            self.Jqy[:-1,:] = N*q*hbar/(m_e*effect_m) * (psi_r_avg * dpsi_i_t_dy_avg - psi_i_avg * dpsi_r_dy_avg )
             self.psi_i_old = self.psi_i
 
         #
@@ -729,9 +762,9 @@ class FDTD:
         binary_alpha = ListedColormap(binary)
 
         clear()
-        print(f"Lx = {sim.Lx}, Ly = {sim.Ly}")
-        print(f"dt = {sim.dt}, nt = {nt}, dx = {sim.dx_fine}")
-        print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
+        print(f"Lx = {sim.Lx}, Ly = {sim.Ly}" if not sim.there_is_qm else f"Lx = {sim.Lx * 1e9:.2f} nm, Ly = {sim.Ly * 1e9:.2f} nm")
+        print(f"dt = {sim.dt}, nt = {nt}, dx_fine = {sim.dx_fine}" if not sim.there_is_qm else f"dt = {sim.dt*1e9} ns, nt = {nt}, dx_fine = {sim.dx_fine*1e9:.2f} nm")
+        print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}" if not sim.there_is_qm else f"lmin = {sim.lmin*1e9:.2f} nm, tc = {sim.tc*1e9} ns, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
         print(f"Grid size = {sim.Nx} x {sim.Ny}")
         if self.there_is_qm:
             print(f"V max: {np.max(sim.V)}, T_osc: {2*np.pi / 50e14 }")
@@ -1117,7 +1150,7 @@ def Run():
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     10,10,10000000,10000000000000)
         elif choice == '4':                                                                                                                                                        #omega was 50e14
-            return testing(0.000005,0.000005,1,0.0000000000000000056,'circle',0.0000025,0.0000025,0.00000025 * 2,'e', rel_m_eff=0.15, omega= 50e14, timesteps=500)
+            return testing(15e-7 ,15e-7,1,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15, omega= 50e14, timesteps=1000)
         elif choice == '0':
             return Run()
 
