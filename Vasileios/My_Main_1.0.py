@@ -163,6 +163,7 @@ class FDTD:
         self.there_is_qm = any([scat.material == 'e' for scat in scatterer_list])
         self.dx_coarse = self.lmin / 10
         if self.there_is_qm:
+            self.m_eff = m_e  # temporary definition here
             # decouple source from spatial discretization, override with predetermined values
             # simple first, if works ok, automate with number of cells wanted in q.dot (well)
             self.dx_coarse = 0.1e-9
@@ -377,16 +378,18 @@ class FDTD:
                     # create potential
                     xc, yc = scatterer.geometry['center']
                     r = scatterer.geometry['radius']
-                    m_eff = scatterer.properties['m_eff']*m_e
+                    self.m_eff = scatterer.properties['m_eff']*m_e
                     omega = scatterer.properties['omega']
-                    self.get_V(xc,yc,r, m_eff, omega) # create each potential well
-                    self.init_psi(xc,yc,scatterer.ID,m_eff,omega)
+                    self.get_V(xc,yc,r, self.m_eff, omega) # create each potential well
+                    self.init_psi(xc,yc,scatterer.ID,self.m_eff,omega)
                     self.QM_rel_x[self.mask_Hz==scatterer.ID] = self.Xc[self.mask_Hz==scatterer.ID] - xc
                     self.QM_rel_y[self.mask_Hz==scatterer.ID] = self.Yc[self.mask_Hz==scatterer.ID] - yc
             self.maskQM_Ex = self.maskQM_Ex.astype(bool)
             self.maskQM_Ey = self.maskQM_Ey.astype(bool)
             # self.maskQM = self.maskQM.astype(bool)
+            self.boundarymaskQM = self.maskQM
             self.maskQM = ndimage.binary_erosion(self.maskQM)   # not touching BC, therefore stays 0
+            self.boundarymaskQM = np.logical_xor(self.boundarymaskQM,self.maskQM)
 
         for scatterer in self.scatterer_list:
             if scatterer.material == 'Drude':
@@ -755,38 +758,62 @@ class FDTD:
         ax.invert_yaxis()
         plt.show()
 
-    def iterate(self,nt, visu=True,saving = False, just1D = False):
+    def iterate(self, nt, visu=True, saving=False, just1D=False):
 
-        fig, ax = plt.subplots()
-        ax.set_xlabel('(m)')
-        ax.set_ylabel('(m)')
+        if visu:
+            fig, ax = plt.subplots()
+            ax.set_xlabel('(m)')
+            ax.set_ylabel('(m)')
 
-        ax.invert_yaxis()
-        plt.axis('equal')
+            ax.invert_yaxis()
+            plt.axis('equal')
 
-        Qfig, Qax = plt.subplots()
-        Qax.set_xlabel('(m)')
-        Qax.set_ylabel('(m)')
-        Qax.invert_yaxis()
-        plt.axis('equal')
-        Qpos = []
-        Qmom = []
-        QEkin = []
+        if self.there_is_qm and visu:
+            Qfig, Qax = plt.subplots()
+            Qax.set_xlabel('(m)')
+            Qax.set_ylabel('(m)')
+            Qax.invert_yaxis()
+            plt.axis('equal')
+            Qmovie = []
 
-        movie = []
-        Qmovie = []
-        binary = plt.cm.binary(np.linspace(0, 1, 256))
-        alphas = np.linspace(0.0, 1.0, 256)
-        binary[:, -1] = alphas
-        binary_alpha = ListedColormap(binary)
+            posfig, posax = plt.subplots()
+            Qpos = []
+            posax.set_xlabel('(m)')
+            posax.set_ylabel('(m)')
+            plt.axis('equal')
 
-        for it in tqdm(range(0,nt), desc='Simulating'):
+            momfig, momax = plt.subplots()
+            Qmom = []
+            momax.set_xlabel('(m)')
+            momax.set_ylabel('(m)')
+            plt.axis('equal')
+
+            Ekinfig, Ekinax = plt.subplots()
+            QEkin = []
+
+        if visu:
+            movie = []
+            binary = plt.cm.binary(np.linspace(0, 1, 256))
+            alphas = np.linspace(0.0, 1.0, 256)
+            binary[:, -1] = alphas
+            binary_alpha = ListedColormap(binary)
+
+        clear()
+        print(
+            f"Lx = {sim.Lx}, Ly = {sim.Ly}" if not sim.there_is_qm else f"Lx = {sim.Lx * 1e9:.2f} nm, Ly = {sim.Ly * 1e9:.2f} nm")
+        print(
+            f"dt = {sim.dt}, nt = {nt}, dx_fine = {sim.dx_fine}" if not sim.there_is_qm else f"dt = {sim.dt * 1e9} ns, nt = {nt}, dx_fine = {sim.dx_fine * 1e9:.2f} nm")
+        print(
+            f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}" if not sim.there_is_qm else f"lmin = {sim.lmin * 1e9:.2f} nm, tc = {sim.tc * 1e9} ns, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
+        print(f"Grid size = {sim.Nx} x {sim.Ny}")
+        if self.there_is_qm:
+            print(f"V max: {np.max(sim.V)}, T_osc: {2 * np.pi / 50e14}")
+
+        for it in tqdm(range(0, nt), desc='Simulating'):
             t = (it - 1) * self.dt
 
-            if not using_tqdm and ( it % max(1, nt // 20) == 0):
+            if not using_tqdm and (it % max(1, nt // 20) == 0):
                 print(f'Simulating: {int(100 * it / nt):3d}% ({it:{len(str(nt))}d}/{nt})')
-
-
 
             # hard point source used before PW was implemented
 
@@ -795,11 +822,11 @@ class FDTD:
             # source = self.A * np.exp(-(t - self.tc)**2 / (2 * self.s_pulse**2))
             # self.Hz[y_source, x_source] += source  # Adding source term to propagation
 
-            self.source_pw(t)   #update incident field for TFSF
+            self.source_pw(t)  # update incident field for TFSF
             self.update()  # Propagate over one time step
 
             if visu:
-                if  just1D:
+                if just1D:
                     artists = [
                         ax.plot(np.arange(0, len(self.Hz_1D)), self.Hz_1D, color='r', label='Hz_1D')[0],
                         ax.plot(np.arange(0, len(self.E_inc)), self.E_inc, color='b', label='E_inc')[0],
@@ -812,60 +839,101 @@ class FDTD:
                         ax.text(0.5, 1.05, '%d/%d' % (it, nt),
                                 size=plt.rcParams["axes.titlesize"],
                                 ha="center", transform=ax.transAxes),
-                        ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-1*self.A,vmax=1*self.A,cmap='seismic',)
+                        ax.pcolormesh(self.x_edges, self.y_edges, self.Hz, vmin=-1 * self.A, vmax=1 * self.A,
+                                      cmap='seismic', )
                     ]
 
                 for obs in sim.observation_points.values():
                     artists.append(ax.plot(obs.x, obs.y, 'ko', fillstyle="none")[0])
                 if self.there_is_PMC:
-                    artists.append(ax.contourf(self.x_edges[:-1],self.y_edges[:-1],self.maskPMCz,cmap=binary_alpha,vmin=0,vmax=1))
+                    artists.append(
+                        ax.contourf(self.x_edges[:-1], self.y_edges[:-1], self.maskPMCz, cmap=binary_alpha, vmin=0,
+                                    vmax=1))
                 if self.there_is_PEC:
-                    artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskPECy,cmap=binary_alpha,vmin=0,vmax=1))
+                    artists.append(
+                        ax.contourf(self.x_edges[1:-1], self.y_edges[:-1], self.maskPECy, cmap=binary_alpha, vmin=0,
+                                    vmax=1))
                 if self.there_is_qm:
-                    prob = np.sqrt(self.psi_r**2+self.psi_i**2)
-                    artists.append(Qax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=5))
-                    artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskQM_Ey,cmap=binary_alpha,vmin=0,vmax=5))
+                    prob = np.sqrt(self.psi_r ** 2 + self.psi_i ** 2)
+                    artists.append(
+                        ax.contourf(self.x_edges[:-1], self.y_edges[:-1], self.boundarymaskQM, cmap=binary_alpha,
+                                    vmin=0, vmax=1))
                     Qartists = [
                         Qax.text(0.5, 1.05, '%d/%d' % (it, nt),
-                                size=plt.rcParams["axes.titlesize"],
-                                ha="center", transform=ax.transAxes),
-                        Qax.pcolormesh(self.x_edges,self.y_edges,prob,cmap='seismic',)
+                                 size=plt.rcParams["axes.titlesize"],
+                                 ha="center", transform=ax.transAxes),
+                        Qax.pcolormesh(self.x_edges, self.y_edges, prob, cmap='seismic', )
                     ]
                     Qmovie.append(Qartists)
-                    #Qpos.append((np.average(np.multiply(self.x_edges,prob)),np.average(np.multiply(self.y_edges,prob))))
-                    #Qmom.append(hbar*(np.average(np.multiply((self.psi[1:]-self.x_edges[1:])/self.dx,prob)),np.average(np.multiply((self.y_edges[1:]-self.y_edges[1:])/self.dy,prob))))
-                    #QEkin.append(Qmom[-1][0]*Qmom[-1][1])
+                    Qartists.append(
+                        Qax.contourf(self.x_edges[:-1], self.y_edges[:-1], self.boundarymaskQM, cmap=binary_alpha,
+                                     vmin=0, vmax=1))
+                    Qpos.append((np.average(np.multiply(self.Xc, prob)), np.average(np.multiply(self.Yc, prob))))
+                    Qmom.append((np.average(np.sqrt(
+                        np.add(np.square(hbar * (self.psi_r[1:] - self.psi_r[:-1]) / self.DX_Hz[:-1]),
+                               np.square(hbar * (self.psi_i[1:] - self.psi_i[:-1]) / self.DX_Hz[:-1])))),
+                                 np.average(np.sqrt(np.add(
+                                     np.square(hbar * (self.psi_r[:, 1:] - self.psi_r[:, :-1]) / self.DY_Hz[:, :-1]),
+                                     np.square(
+                                         hbar * (self.psi_i[:, 1:] - self.psi_i[:, :-1]) / self.DY_Hz[:, :-1]))))))
+                    QEkin.append((np.square(Qmom[-1][0]) + np.square(Qmom[-1][1])) / (2 * self.m_eff))
                 movie.append(artists)
 
         print('Iterations done')
         endtime = time.time()
         if visu:
-            anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
-            Qanim = ArtistAnimation(Qfig, Qmovie, interval=10, repeat_delay=1000, blit=True)
-
-            if saving:
-                anim.save('H.gif', writer='pillow')
-                Qanim.save('Psi.gif', writer='pillow')
             if self.there_is_qm:
+                plt.close(fig)
+                plt.close(Qfig)
+                plt.close(posfig)
+                plt.close(momfig)
+                plt.close(Ekinfig)
                 while True:
-                    choice = input("Which animation to view? Type 'EM', 'QM' or 'exit': ")
-                    if choice == 'EM':
-                        plt.close(Qfig)
+                    clear()
+                    choice = input("Which animation or plot to view?\n" \
+                                   "EM animation:      1\n" \
+                                   "QM animation:      2\n"
+                                   "Position plot:     3\n"
+                                   "Momentum plot:     4\n"
+                                   "Kinetic Energy:    5\n"
+                                   "\n"
+                                   "Exit:              0\n")
+                    plt.close()
+                    if choice == '1':
                         anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
                         fig.show()
                         plt.show()
-                    elif choice == 'QM':
                         plt.close(fig)
+                    elif choice == '2':
                         Qanim = ArtistAnimation(Qfig, Qmovie, interval=10, repeat_delay=1000, blit=True)
                         Qfig.show()
                         plt.show()
-                    elif choice.lower() == 'exit':
+                        plt.close(Qfig)
+                    elif choice == '3':
+                        posax.plot(*zip(*Qpos))
+                        posfig.show()
+                        plt.show()
+                        plt.close(posfig)
+                    elif choice == '4':
+                        momax.plot(*zip(*Qmom))
+                        momfig.show()
+                        plt.show()
+                        plt.close(momfig)
+                    elif choice == '5':
+                        Ekinax.plot(QEkin)
+                        Ekinfig.show()
+                        plt.show()
+                        plt.close(Ekinfig)
+                    elif choice == '0':
                         break
             else:
                 anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
-                plt.close(Qfig)
                 fig.show()
                 plt.show()
+            if saving:
+                anim.save('H.gif', writer='pillow')
+                if self.there_is_qm:
+                    Qanim.save('Psi.gif', writer='pillow')
         return endtime
 
 
@@ -1377,11 +1445,11 @@ Lx, Ly, PW, scatter_list, obs_dict_tuples, nt = Run()
 sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
 
 
-print(f"Lx = {sim.Lx}, Ly = {sim.Ly}" if not sim.there_is_qm else f"Lx = {sim.Lx * 1e9:.2f} nm, Ly = {sim.Ly * 1e9:.2f} nm")
-print(f"dt = {sim.dt}, nt = {nt}, dx_fine = {sim.dx_fine}" if not sim.there_is_qm else f"dt = {sim.dt*1e9} ns, nt = {nt}, dx_fine = {sim.dx_fine*1e9:.2f} nm")
-print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}" if not sim.there_is_qm else f"lmin = {sim.lmin*1e9:.2f} nm, tc = {sim.tc*1e9} ns, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
-print(f"Grid size = {sim.Nx} x {sim.Ny}")
-print(f"V max: {np.max(sim.V)}, T_osc: {2*np.pi / 50e14 }")
+# print(f"Lx = {sim.Lx}, Ly = {sim.Ly}" if not sim.there_is_qm else f"Lx = {sim.Lx * 1e9:.2f} nm, Ly = {sim.Ly * 1e9:.2f} nm")
+# print(f"dt = {sim.dt}, nt = {nt}, dx_fine = {sim.dx_fine}" if not sim.there_is_qm else f"dt = {sim.dt*1e9} ns, nt = {nt}, dx_fine = {sim.dx_fine*1e9:.2f} nm")
+# print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}" if not sim.there_is_qm else f"lmin = {sim.lmin*1e9:.2f} nm, tc = {sim.tc*1e9} ns, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
+# print(f"Grid size = {sim.Nx} x {sim.Ny}")
+# print(f"V max: {np.max(sim.V)}, T_osc: {2*np.pi / 50e14 }")
 
 import time
 start = time.time()
@@ -1403,7 +1471,9 @@ def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
 psi_norm = np.sqrt(np.sum((sim.psi_r ** 2 + sim.psi_i**2) * sim.dx_fine ** 2))
 print(f'Norm of the wavefunction after the iterations: {psi_norm}')
 
-# plot_potential(sim.V, sim.Xc, sim.Yc)
+plot_potential(sim.V, sim.Xc, sim.Yc)
+# plot_potential(sim.QM_rel_x, sim.Xc, sim.Yc)
+# plot_potential(sim.QM_rel_y, sim.Xc, sim.Yc)
 
 #sim1 = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     #10,10,10000000,10000000000000,['6,10','14,10']))2          These worked with an older version of the code , amount of timesteps was 1400 and the wave moved in the positive x direction
