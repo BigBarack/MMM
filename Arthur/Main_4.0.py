@@ -753,12 +753,12 @@ class FDTD:
                     Qmovie.append(prob.copy())
 
                     Qpos.append((np.sum(self.QM_rel_x * prob * self.dx_fine**2),
-                                np.sum(self.QM_rel_y * prob * self.dx_fine**2)))
+                                -np.sum(self.QM_rel_y * prob * self.dx_fine**2)))
 
-                    px = -hbar * self.dx_fine**2 * np.sum(((self.psi_r[:, :-1] + self.psi_r[:, 1:]) / 2 * (self.psi_i[:, 1:] - self.psi_i[:, :-1]) / self.dx_fine)
+                    px = hbar * self.dx_fine**2 * np.sum(((self.psi_r[:, :-1] + self.psi_r[:, 1:]) / 2 * (self.psi_i[:, 1:] - self.psi_i[:, :-1]) / self.dx_fine)
                         - ((self.psi_i[:, :-1] + self.psi_i[:, 1:]) / 2 * (self.psi_r[:, 1:] - self.psi_r[:, :-1]) / self.dx_fine))
 
-                    py = -hbar * self.dx_fine**2 * np.sum(((self.psi_r[1:, :] + self.psi_r[:-1, :]) / 2 * (self.psi_i[:-1, :] - self.psi_i[1:, :]) / self.dx_fine)
+                    py = hbar * self.dx_fine**2 * np.sum(((self.psi_r[1:, :] + self.psi_r[:-1, :]) / 2 * (self.psi_i[:-1, :] - self.psi_i[1:, :]) / self.dx_fine)
                         - ((self.psi_i[1:, :] + self.psi_i[:-1, :]) / 2 * (self.psi_r[:-1, :] - self.psi_r[1:, :]) / self.dx_fine))
 
                     Qmom.append((px, py))
@@ -786,15 +786,14 @@ class FDTD:
 
                 if choice == '1':
                     fig, ax = plt.subplots()
-                    im = ax.pcolormesh(self.x_edges, self.y_edges, movie[0], cmap='seismic',
-                                    vmin=-self.A*1.5, vmax=self.A*1.5)
-                    cbar = fig.colorbar(im, ax=ax)
-                    cbar.set_label('Field Intensity')
+                    im = ax.pcolormesh(self.x_edges, np.flip(self.y_edges), movie[0], cmap='seismic',
+                                    vmin=-np.max(movie), vmax=np.max(movie))
+                    #cbar = fig.colorbar(im, ax=ax)
+                    #cbar.set_label('Field Intensity')
                     title = ax.text(0.5, 1.05, '', transform=ax.transAxes, ha='center', fontsize=12)
                     ax.set_xlabel('(m)')
                     ax.set_ylabel('(m)')
                     ax.set_aspect('equal')
-                    ax.invert_yaxis()
 
                     def update_em(it):
                         im.set_array(movie[it])
@@ -806,14 +805,13 @@ class FDTD:
 
                 elif choice == '2' and self.there_is_qm:
                     Qfig, Qax = plt.subplots()
-                    qim = Qax.pcolormesh(self.x_edges, self.y_edges, Qmovie[0], cmap='seismic', vmin=0, vmax=np.max(Qmovie))
+                    qim = Qax.pcolormesh(self.x_edges, np.flip(self.y_edges), Qmovie[0], cmap='seismic', vmin=0, vmax=np.max(Qmovie))
                     qbar = Qfig.colorbar(qim, ax=Qax)
                     qbar.set_label('Probability Density')
                     qtitle = Qax.text(0.5, 1.05, '', transform=Qax.transAxes, ha='center', fontsize=12)
                     Qax.set_xlabel('(m)')
                     Qax.set_ylabel('(m)')
                     Qax.set_aspect('equal')
-                    Qax.invert_yaxis()
 
                     def update_qm(it):
                         qim.set_array(Qmovie[it])
@@ -829,6 +827,8 @@ class FDTD:
                     ax.set_title("Position")
                     ax.set_xlabel('(m)')
                     ax.set_ylabel('(m)')
+                    ax.set_xlim(-2.5e-9,2.5e-9)
+                    ax.set_ylim(-2.5e-9,2.5e-9)
                     plt.show()
 
                 elif choice == '4' and self.there_is_qm:
@@ -837,6 +837,9 @@ class FDTD:
                     ax.set_title("Momentum")
                     ax.set_xlabel('px')
                     ax.set_ylabel('py')
+                    maxmom = np.max(np.abs(Qmom))
+                    ax.set_xlim(-maxmom,maxmom)
+                    ax.set_ylim(-maxmom,maxmom)
                     plt.show()
 
                 elif choice == '5' and self.there_is_qm:
@@ -851,7 +854,7 @@ class FDTD:
                     break
         else:
             fig, ax = plt.subplots()
-            im = ax.pcolormesh(self.x_edges, self.y_edges, movie[0], cmap='seismic',
+            im = ax.pcolormesh(self.x_edges, np.flip(self.y_edges), movie[0], cmap='seismic',
                             vmin=-self.A*1.5, vmax=self.A*1.5)
             im.set_animated(True)  # important for blit=True
 
@@ -1143,7 +1146,7 @@ def Run():
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     10,10,10000000,10000000000000)
         elif choice == '4':                                                                                                                                                        #omega was 50e14
-            return testing(15e-7 ,15e-7,0,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=10000)
+            return testing(15e-7 ,15e-7,1e9,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=1000)
         elif choice == '0':
             return Run()
 
