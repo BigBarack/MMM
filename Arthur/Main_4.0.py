@@ -3,7 +3,7 @@ from os import system, name
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 from matplotlib.collections import LineCollection
-from matplotlib.animation import ArtistAnimation
+from matplotlib.animation import ArtistAnimation, FuncAnimation
 from matplotlib.ticker import MaxNLocator
 from scipy.special import hankel2
 from scipy.special import jv
@@ -724,168 +724,164 @@ class FDTD:
         ax.invert_yaxis()
         plt.show()
 
-    def iterate(self,nt, visu=True,saving = False, just1D = False):
+    def iterate(self, nt, visu=True, saving=False, just1D=False):
+        import matplotlib.pyplot as plt
+        from matplotlib.animation import FuncAnimation
+        import numpy as np
+        import time
+        from tqdm import tqdm
 
-        fig, ax = plt.subplots()
-        ax.set_xlabel('(m)')
-        ax.set_ylabel('(m)')
-
-        ax.invert_yaxis()
-        plt.axis('equal')
-
-        if self.there_is_qm:
-            Qfig, Qax = plt.subplots()
-            Qax.set_xlabel('(m)')
-            Qax.set_ylabel('(m)')
-            Qax.invert_yaxis()
-            plt.axis('equal')
-            Qmovie = []
-
-            posfig, posax = plt.subplots()
-            Qpos = []
-            posax.set_xlabel('(m)')
-            posax.set_ylabel('(m)')
-            plt.axis('equal')
-
-            momfig, momax = plt.subplots()
-            Qmom = []
-            momax.set_xlabel('(m)')
-            momax.set_ylabel('(m)')
-            plt.axis('equal')
-
-            Ekinfig, Ekinax = plt.subplots()
-            QEkin = []
-
-
+        # Set up storage
         movie = []
-        binary = plt.cm.binary(np.linspace(0, 1, 256))
-        alphas = np.linspace(0.0, 1.0, 256)
-        binary[:, -1] = alphas
-        binary_alpha = ListedColormap(binary)
+        Qmovie = []
+        Qpos = []
+        Qmom = []
+        QEkin = []
 
+        # Simulation info
         clear()
-        print(f"Lx = {sim.Lx}, Ly = {sim.Ly}" if not sim.there_is_qm else f"Lx = {sim.Lx * 1e9:.2f} nm, Ly = {sim.Ly * 1e9:.2f} nm")
-        print(f"dt = {sim.dt}, nt = {nt}, dx_fine = {sim.dx_fine}" if not sim.there_is_qm else f"dt = {sim.dt*1e9} ns, nt = {nt}, dx_fine = {sim.dx_fine*1e9:.2f} nm")
-        print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}" if not sim.there_is_qm else f"lmin = {sim.lmin*1e9:.2f} nm, tc = {sim.tc*1e9} ns, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
+        print(f"Lx = {sim.Lx:.2e} m, Ly = {sim.Ly:.2e} m")
+        print(f"dt = {sim.dt:.2e} s, nt = {nt}, dx = {sim.dx_fine:.2e} m")
+        print(f"lmin = {sim.lmin:.2e} m, tc = {sim.tc:.2e} s, A = {sim.A}, sigma = {sim.s_pulse}, dir = {sim.direction}")
         print(f"Grid size = {sim.Nx} x {sim.Ny}")
         if self.there_is_qm:
-            print(f"V max: {np.max(sim.V)}, T_osc: {2*np.pi / 50e14 }")
+            print(f"V max: {np.max(sim.V):.2e}, T_osc: {2*np.pi / 50e14 :.2e} s")
 
-        for it in tqdm(range(0,nt), desc='Simulating'):
+        for it in tqdm(range(nt), desc="Simulating"):
             t = (it - 1) * self.dt
-
-            if not using_tqdm and ( it % max(1, nt // 20) == 0):
-                print(f'Simulating: {int(100 * it / nt):3d}% ({it:{len(str(nt))}d}/{nt})')
-
-
-
-            # hard point source used before PW was implemented
-
-            # y_source = sim.Ny // 2
-            # x_source = sim.Ny // 3
-            # source = self.A * np.exp(-(t - self.tc)**2 / (2 * self.s_pulse**2))
-            # self.Hz[y_source, x_source] += source  # Adding source term to propagation
-
-            self.source_pw(t)   #update incident field for TFSF
-            self.update()  # Propagate over one time step
+            self.source_pw(t)
+            self.update()
 
             if visu:
-                if  just1D:
-                    artists = [
-                        ax.plot(np.arange(0, len(self.Hz_1D)), self.Hz_1D, color='r', label='Hz_1D')[0],
-                        ax.plot(np.arange(0, len(self.E_inc)), self.E_inc, color='b', label='E_inc')[0],
-                        ax.text(0.5, 1.05, '%d/%d' % (it, nt),
-                                size=plt.rcParams["axes.titlesize"],
-                                ha="center", transform=ax.transAxes)
-                    ]
-                else:
-                    artists = [
-                        ax.text(0.5, 1.05, '%d/%d' % (it, nt),
-                                size=plt.rcParams["axes.titlesize"],
-                                ha="center", transform=ax.transAxes),
-                        ax.pcolormesh(self.x_edges,self.y_edges,self.Hz,vmin=-1*self.A,vmax=1*self.A,cmap='seismic',)
-                    ]
+                if not just1D:
+                    movie.append(self.Hz.copy())
 
-                for obs in sim.observation_points.values():
-                    artists.append(ax.plot(obs.x, obs.y, 'ko', fillstyle="none")[0])
-                if self.there_is_PMC:
-                    artists.append(ax.contourf(self.x_edges[:-1],self.y_edges[:-1],self.maskPMCz,cmap=binary_alpha,vmin=0,vmax=1))
-                if self.there_is_PEC:
-                    artists.append(ax.contourf(self.x_edges[1:-1],self.y_edges[:-1],self.maskPECy,cmap=binary_alpha,vmin=0,vmax=1))
                 if self.there_is_qm:
-                    prob = np.sqrt(self.psi_r**2+self.psi_i**2)
-                    artists.append(ax.contourf(self.x_edges[:-1],self.y_edges[:-1],self.boundarymaskQM,cmap=binary_alpha,vmin=0,vmax=1))
-                    Qartists = [
-                        Qax.text(0.5, 1.05, '%d/%d' % (it, nt),
-                                size=plt.rcParams["axes.titlesize"],
-                                ha="center", transform=ax.transAxes),
-                        Qax.pcolormesh(self.x_edges,self.y_edges,prob,cmap='seismic',)
-                    ]
-                    Qmovie.append(Qartists)
-                    Qartists.append(Qax.contourf(self.x_edges[:-1],self.y_edges[:-1],self.boundarymaskQM,cmap=binary_alpha,vmin=0,vmax=1))
-                    Qpos.append((np.sum(np.multiply(self.Xc,prob)*self.dx_fine),np.sum(np.multiply(self.Yc,prob)*self.dx_fine)))
-                    Qmom.append((-hbar*self.dx_fine*np.sum(((self.psi_r[:,:-1]+self.psi_r[:,1:])/2*(self.psi_i[:,1:]-self.psi_i[:,:-1])/self.dx_fine)
-                                                          -((self.psi_i[:,:-1]+self.psi_i[:,1:])/2*(self.psi_r[:,1:]-self.psi_r[:,:-1])/self.dx_fine)),
-                                 -hbar*self.dx_fine*np.sum(((self.psi_r[1:,:]+self.psi_r[:-1,:])/2*(self.psi_i[:-1,:]-self.psi_i[1:,:])/self.dx_fine)
-                                                          -((self.psi_i[1:,:]+self.psi_i[:-1,:])/2*(self.psi_r[:-1,:]-self.psi_r[1:,:])/self.dx_fine))))
-                    QEkin.append((np.square(Qmom[-1][0])+np.square(Qmom[-1][1]))/(2*self.m_eff))
-                movie.append(artists)
+                    prob = np.sqrt(self.psi_r**2 + self.psi_i**2)
+                    Qmovie.append(prob.copy())
+
+                    Qpos.append((np.sum(self.Xc * prob * self.dx_fine),
+                                np.sum(self.Yc * prob * self.dx_fine)))
+
+                    px = -hbar * self.dx_fine * np.sum(((self.psi_r[:, :-1] + self.psi_r[:, 1:]) / 2 * (self.psi_i[:, 1:] - self.psi_i[:, :-1]) / self.dx_fine)
+                        - ((self.psi_i[:, :-1] + self.psi_i[:, 1:]) / 2 * (self.psi_r[:, 1:] - self.psi_r[:, :-1]) / self.dx_fine))
+
+                    py = -hbar * self.dx_fine * np.sum(((self.psi_r[1:, :] + self.psi_r[:-1, :]) / 2 * (self.psi_i[:-1, :] - self.psi_i[1:, :]) / self.dx_fine)
+                        - ((self.psi_i[1:, :] + self.psi_i[:-1, :]) / 2 * (self.psi_r[:-1, :] - self.psi_r[1:, :]) / self.dx_fine))
+
+                    Qmom.append((px, py))
+                    QEkin.append((px**2 + py**2) / (2 * self.m_eff))
 
         print('Iterations done')
         endtime = time.time()
-        if visu:
-            if self.there_is_qm:   
-                plt.close(fig)
-                plt.close(Qfig)
-                plt.close(posfig)
-                plt.close(momfig)
-                plt.close(Ekinfig)
-                while True:
-                    clear()
-                    choice = input("Which animation or plot to view?\n" \
-                    "EM animation:      1\n" \
-                    "QM animation:      2\n"
-                    "Position plot:     3\n"
-                    "Momentum plot:     4\n"
-                    "Kinetic Energy:    5\n"
-                    "\n"
-                    "Exit:              0\n")
-                    plt.close()
-                    if choice == '1':
-                        anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
-                        fig.show()
-                        plt.show()
-                        plt.close(fig)
-                    elif choice == '2':
-                        Qanim = ArtistAnimation(Qfig, Qmovie, interval=10, repeat_delay=1000, blit=True)
-                        Qfig.show()
-                        plt.show()
-                        plt.close(Qfig)
-                    elif choice == '3':
-                        posax.plot(*zip(*Qpos))
-                        posfig.show()
-                        plt.show()
-                        plt.close(posfig)
-                    elif choice == '4':
-                        momax.plot(*zip(*Qmom))
-                        momfig.show()
-                        plt.show()
-                        plt.close(momfig)
-                    elif choice == '5':
-                        Ekinax.plot(QEkin)
-                        Ekinfig.show()
-                        plt.show()
-                        plt.close(Ekinfig)
-                    elif choice == '0':
-                        break
-            else:
-                anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
-                fig.show() 
-                plt.show()
-            if saving:
-                anim.save('H.gif', writer='pillow')
-                if self.there_is_qm:
-                    Qanim.save('Psi.gif', writer='pillow')
+
+        if not visu:
+            return endtime
+
+        # Interactive viewer
+        if self.there_is_qm:
+            while True:
+                clear()
+                choice = input("Which animation or plot to view?\n"
+                            "EM animation:      1\n"
+                            "QM animation:      2\n"
+                            "Position plot:     3\n"
+                            "Momentum plot:     4\n"
+                            "Kinetic Energy:    5\n"
+                            "\n"
+                            "Exit:              0\n")
+                plt.close('all')
+
+                if choice == '1':
+                    fig, ax = plt.subplots()
+                    im = ax.pcolormesh(self.x_edges, self.y_edges, movie[0], cmap='seismic',
+                                    vmin=-self.A*1.5, vmax=self.A*1.5)
+                    cbar = fig.colorbar(im, ax=ax)
+                    cbar.set_label('Field Intensity')
+                    title = ax.text(0.5, 1.05, '', transform=ax.transAxes, ha='center', fontsize=12)
+                    ax.set_xlabel('(m)')
+                    ax.set_ylabel('(m)')
+                    ax.set_aspect('equal')
+                    ax.invert_yaxis()
+
+                    def update_em(it):
+                        im.set_array(movie[it])
+                        title.set_text(f'Timestep {it}')
+                        return [im, title]
+
+                    anim = FuncAnimation(fig, update_em, frames=len(movie), blit=True, interval=2)
+                    plt.show()
+
+                elif choice == '2' and self.there_is_qm:
+                    Qfig, Qax = plt.subplots()
+                    qim = Qax.pcolormesh(self.x_edges, self.y_edges, Qmovie[0], cmap='seismic', vmin=0, vmax=np.max(Qmovie))
+                    qbar = Qfig.colorbar(qim, ax=Qax)
+                    qbar.set_label('Probability Density')
+                    qtitle = Qax.text(0.5, 1.05, '', transform=Qax.transAxes, ha='center', fontsize=12)
+                    Qax.set_xlabel('(m)')
+                    Qax.set_ylabel('(m)')
+                    Qax.set_aspect('equal')
+                    Qax.invert_yaxis()
+
+                    def update_qm(it):
+                        qim.set_array(Qmovie[it])
+                        qtitle.set_text(f'Timestep {it}')
+                        return [qim, qtitle]
+
+                    Qanim = FuncAnimation(Qfig, update_qm, frames=len(Qmovie), blit=True, interval=2)
+                    plt.show()
+
+                elif choice == '3' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(*zip(*Qpos))
+                    ax.set_title("Position")
+                    ax.set_xlabel('(m)')
+                    ax.set_ylabel('(m)')
+                    plt.show()
+
+                elif choice == '4' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(*zip(*Qmom))
+                    ax.set_title("Momentum")
+                    ax.set_xlabel('px')
+                    ax.set_ylabel('py')
+                    plt.show()
+
+                elif choice == '5' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(QEkin)
+                    ax.set_title("Kinetic Energy vs Time")
+                    ax.set_xlabel('Timestep')
+                    ax.set_ylabel('E_kin')
+                    plt.show()
+
+                elif choice == '0':
+                    break
+        else:
+            fig, ax = plt.subplots()
+            im = ax.pcolormesh(self.x_edges, self.y_edges, movie[0], cmap='seismic',
+                            vmin=-self.A*1.5, vmax=self.A*1.5)
+            im.set_animated(True)  # important for blit=True
+
+            cbar = fig.colorbar(im, ax=ax)
+            cbar.set_label('Field Intensity')
+
+            title = ax.text(0.5, 1.05, '', transform=ax.transAxes,
+                            ha='center', fontsize=12, animated=True)
+
+            ax.set_xlabel('(m)')
+            ax.set_ylabel('(m)')
+            ax.set_aspect('equal')
+            ax.invert_yaxis()
+
+            def update_em(it):
+                im.set_array(movie[it])
+                title.set_text(f'Timestep {it}')
+                return [im, title]
+
+            anim = FuncAnimation(fig, update_em, frames=len(movie), blit=True, interval=2)
+            plt.show()
+                
         return endtime
 
 
