@@ -132,6 +132,8 @@ class Scatterer:
 
 class FDTD:
     def __init__(self, Lx:float , Ly:float , PW:dict , scatterer_list:list , observation_points:dict ):
+        self.m_eff = m_e # temporary definition here
+
         # sim area
         self.Lx = Lx * 0.01
         self.Ly = Ly * 0.01
@@ -355,10 +357,10 @@ class FDTD:
                     # create potential
                     xc, yc = scatterer.geometry['center']
                     r = scatterer.geometry['radius']
-                    m_eff = scatterer.properties['m_eff']*m_e
+                    self.m_eff = scatterer.properties['m_eff']*m_e
                     omega = scatterer.properties['omega']
-                    self.get_V(xc,yc,r, m_eff, omega) # create each potential well
-                    self.init_psi(xc,yc,scatterer.ID,m_eff,omega)
+                    self.get_V(xc,yc,r, self.m_eff, omega) # create each potential well
+                    self.init_psi(xc,yc,scatterer.ID,self.m_eff,omega)
                     # self.psi_r[81,81]=1   #was a test initialization
             self.maskQM_Ex = self.maskQM_Ex.astype(bool)
             self.maskQM_Ey = self.maskQM_Ey.astype(bool)
@@ -696,24 +698,31 @@ class FDTD:
         ax.invert_yaxis()
         plt.axis('equal')
 
-        Qfig, Qax = plt.subplots()
-        Qax.set_xlabel('(m)')
-        Qax.set_ylabel('(m)')
-        Qax.invert_yaxis()
-        plt.axis('equal')
+        if self.there_is_qm:
+            Qfig, Qax = plt.subplots()
+            Qax.set_xlabel('(m)')
+            Qax.set_ylabel('(m)')
+            Qax.invert_yaxis()
+            plt.axis('equal')
+            Qmovie = []
 
-        posfig, posax = plt.subplots()
-        Qpos = []
-        posax.set_xlabel('(m)')
-        posax.set_ylabel('(m)')
-        plt.axis('equal')
+            posfig, posax = plt.subplots()
+            Qpos = []
+            posax.set_xlabel('(m)')
+            posax.set_ylabel('(m)')
+            plt.axis('equal')
 
+            momfig, momax = plt.subplots()
+            Qmom = []
+            momax.set_xlabel('(m)')
+            momax.set_ylabel('(m)')
+            plt.axis('equal')
 
-        Qmom = []
-        QEkin = []
+            Ekinfig, Ekinax = plt.subplots()
+            QEkin = []
+
 
         movie = []
-        Qmovie = []
         binary = plt.cm.binary(np.linspace(0, 1, 256))
         alphas = np.linspace(0.0, 1.0, 256)
         binary[:, -1] = alphas
@@ -780,16 +789,20 @@ class FDTD:
                     Qmovie.append(Qartists)
                     Qartists.append(Qax.contourf(self.x_edges[:-1],self.y_edges[:-1],self.boundarymaskQM,cmap=binary_alpha,vmin=0,vmax=1))
                     Qpos.append((np.average(np.multiply(self.Xc,prob)),np.average(np.multiply(self.Yc,prob))))
-                    #Qmom.append(hbar*(np.average(np.multiply((self.psi[1:]-self.x_edges[1:])/self.dx,prob)),np.average(np.multiply((self.y_edges[1:]-self.y_edges[1:])/self.dy,prob))))
-                    #QEkin.append(Qmom[-1][0]*Qmom[-1][1])
+                    Qmom.append((np.average(np.multiply(hbar*(self.psi_r[1:]-self.psi_r[:-1])/self.DX_Hz[:-1],hbar*(self.psi_i[1:]-self.psi_i[:-1])/self.DX_Hz[:-1])),np.average(np.multiply(hbar*(self.psi_r[:,1:]-self.psi_r[:,:-1])/self.DY_Hz[:,:-1],hbar*(self.psi_i[:,1:]-self.psi_i[:,:-1])/self.DY_Hz[:,:-1]))))
+                    QEkin.append(Qmom[-1][0]*Qmom[-1][1]/(2*self.m_eff))
                 movie.append(artists)
 
         print('Iterations done')
         endtime = time.time()
         if visu:
-            if self.there_is_qm:
+            if self.there_is_qm:   
+                plt.close(fig)
+                plt.close(Qfig)
+                plt.close(posfig)
+                plt.close(momfig)
+                plt.close(Ekinfig)
                 while True:
-                    plt.close()
                     clear()
                     choice = input("Which animation or plot to view?\n" \
                     "EM animation:      1\n" \
@@ -799,30 +812,38 @@ class FDTD:
                     "Kinetic Energy:    5\n"
                     "\n"
                     "Exit:              0\n")
+                    plt.close()
                     if choice == '1':
                         anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
-                        plt.close()
                         fig.show()
                         plt.show()
+                        plt.close(fig)
                     elif choice == '2':
                         Qanim = ArtistAnimation(Qfig, Qmovie, interval=10, repeat_delay=1000, blit=True)
-                        plt.close()
                         Qfig.show()
                         plt.show()
+                        plt.close(Qfig)
                     elif choice == '3':
-                        plt.close()
                         posax.plot(*zip(*Qpos))
-                        plt.close()
                         posfig.show()
                         plt.show()
+                        plt.close(posfig)
+                    elif choice == '4':
+                        momax.plot(*zip(*Qmom))
+                        momfig.show()
+                        plt.show()
+                        plt.close(momfig)
+                    elif choice == '5':
+                        Ekinax.plot(QEkin)
+                        Ekinfig.show()
+                        plt.show()
+                        plt.close(Ekinfig)
                     elif choice == '0':
                         break
             else:
-                plt.close()
                 anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
-                plt.close()
-                fig.show()
-                plt.show() 
+                fig.show() 
+                plt.show()
             if saving:
                 anim.save('H.gif', writer='pillow')
                 if self.there_is_qm:
@@ -1340,7 +1361,8 @@ sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
 import time
 start = time.time()
 end = sim.iterate(int(nt), visu = True, just1D=False, saving=False)
-print(f"Runtime: {end - start:.2f} seconds")
+clear()
+print(f"Runtime core simulation: {end - start:.2f} seconds")
 def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
     # import matplotlib.pyplot as plt
     plt.figure(figsize=(6, 5))
