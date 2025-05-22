@@ -167,9 +167,9 @@ class FDTD:
             # decouple source from spatial discretization, override with predetermined values
             # simple first, if works ok, automate with number of cells wanted in q.dot (well)
             self.dx_coarse = 0.1e-9
-            print(f'previous dt: {self.dt}')
+            # print(f'previous dt: {self.dt}')
             new_dt = (self.dx_coarse / 2 )/ (c * np.sqrt(2))
-            print(f'new dx leads to maximum dt: {new_dt}')
+            print(f'For electron well, overriding previous dt={self.dt} because of new dx leading to maximum dt: {new_dt}')
             self.dt = new_dt
             self.tc = 3 * self.s_pulse
         self.dx_inter1 = self.dx_coarse / ( 2 ** (1/3) )
@@ -500,6 +500,7 @@ class FDTD:
         :return: updates the psi_r with local wavefunction
         """
         a = np.sqrt(m * w / hbar)
+        print(f'this is the shift: {x_shift * np.sqrt(2) / a *1e9}')
         # print(f'Gaussian width sigma = {1/a}')
         x_rel = self.Xc - xc
         y_rel = self.Yc - yc
@@ -621,22 +622,22 @@ class FDTD:
             ex = field_avg(self.Ex,'vertical')
             ey = field_avg(self.Ey, 'horizontal')
 
-            # self.psi_r[self.maskQM] -= self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM]
+            # self.psi_r[self.maskQM] -= self.dt/hbar *( (hbar**2/(2*self.m_eff)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM]
             #                                                    + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_i[self.maskQM]
             #                                                    + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_i[self.maskQM]
             #                                                    - self.V[self.maskQM] * self.psi_i[self.maskQM] )
             #
-            # self.psi_i[self.maskQM] += self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM]
+            # self.psi_i[self.maskQM] += self.dt/hbar *( (hbar**2/(2*self.m_eff)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM]
             #                                                    + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_r[self.maskQM]
             #                                                    + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_r[self.maskQM]
             #                                                    - self.V[self.maskQM] * self.psi_r[self.maskQM] )
             #
-            self.psi_r[self.maskQM] -= self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM]
+            self.psi_r[self.maskQM] -= self.dt/hbar *( (hbar**2/(2*self.m_eff)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM]
                                                                + q_e * ex[self.maskQM] * self.QM_rel_x[self.maskQM] * self.psi_i[self.maskQM]
                                                                + q_e * ey[self.maskQM] * self.QM_rel_y[self.maskQM] * self.psi_i[self.maskQM]
                                                                - self.V[self.maskQM] * self.psi_i[self.maskQM] )
 
-            self.psi_i[self.maskQM] += self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM]
+            self.psi_i[self.maskQM] += self.dt/hbar *( (hbar**2/(2*self.m_eff)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM]
                                                                + q_e * ex[self.maskQM] * self.QM_rel_x[self.maskQM] * self.psi_r[self.maskQM]
                                                                + q_e * ey[self.maskQM] * self.QM_rel_y[self.maskQM] * self.psi_r[self.maskQM]
                                                                - self.V[self.maskQM] * self.psi_r[self.maskQM] )
@@ -758,6 +759,32 @@ class FDTD:
         ax.invert_yaxis()
         plt.show()
 
+    def observables(self):
+        # probability density P= psi* x psi = Im^2 + Re^2
+        prob = self.psi_r ** 2 + self.psi_i ** 2
+        # print(f'test integral {np.sum(prob*self.dx_fine**2)}')      # integral probability in V
+        dx2=self.dx_fine**2
+        x_exp = np.sum(prob * self.QM_rel_x * dx2)
+        y_exp = np.sum(prob * self.QM_rel_y * dx2)
+        print(f'<x> = {x_exp*1e9} nm, <y> = {y_exp*1e9} nm')
+        # dpsi/dx and dpsi/dy using central differences (collocated grid)
+        dpsi_r_dx = (self.psi_r[:, 2:] - self.psi_r[:, :-2]) / (2 * self.dx_fine)
+        dpsi_i_dx = (self.psi_i[:, 2:] - self.psi_i[:, :-2]) / (2 * self.dx_fine)
+        dpsi_r_dy = (self.psi_r[2:,:] - self.psi_r[:-2, :]) / (2 * self.dx_fine)
+        dpsi_i_dy = (self.psi_i[2:,:] - self.psi_i[:-2, :]) / (2 * self.dx_fine)
+        # integral <px>=integ[psi* (-jd/dx)psi ]dx^2 & same for y, integral -> sum
+        px_exp = hbar * np.sum((self.psi_r[:,1:-1] * dpsi_i_dx - self.psi_i[:,1:-1] * dpsi_r_dx)*dx2)
+        py_exp = hbar * np.sum((self.psi_r[1:-1,:] * dpsi_i_dy - self.psi_i[1:-1,:] * dpsi_r_dy)*dx2)
+        print(f'momentum: <px> = {px_exp} , <py> = {py_exp}')
+        # kinetic energy T= -hbar^2 / 2m * Laplacial
+        T_exp = - hbar**2/(2*self.m_eff) * np.sum((self.psi_r * laplacian_2D_4o(self.psi_r,self.dx_fine) +  self.psi_i * laplacian_2D_4o(self.psi_i,self.dx_fine))*dx2)
+        print(f'kinetic energy: <T> = {T_exp}')
+
+
+
+
+
+
     def iterate(self, nt, visu=True, saving=False, just1D=False):
 
         if visu:
@@ -798,7 +825,7 @@ class FDTD:
             binary[:, -1] = alphas
             binary_alpha = ListedColormap(binary)
 
-        clear()
+        # clear()
         print(
             f"Lx = {sim.Lx}, Ly = {sim.Ly}" if not sim.there_is_qm else f"Lx = {sim.Lx * 1e9:.2f} nm, Ly = {sim.Ly * 1e9:.2f} nm")
         print(
@@ -868,7 +895,10 @@ class FDTD:
                     Qartists.append(
                         Qax.contourf(self.x_edges[:-1], self.y_edges[:-1], self.boundarymaskQM, cmap=binary_alpha,
                                      vmin=0, vmax=1))
-                    Qpos.append((np.average(np.multiply(self.Xc, prob)), np.average(np.multiply(self.Yc, prob))))
+                    # Qpos.append((np.average(np.multiply(self.Xc, prob)), np.average(np.multiply(self.Yc, prob))))
+                    x_exp = np.sum(prob * self.QM_rel_x * self.dx_fine)
+                    y_exp = np.sum(prob * self.QM_rel_y * self.dx_fine)
+                    Qpos.append((x_exp,y_exp))
                     Qmom.append((np.average(np.sqrt(
                         np.add(np.square(hbar * (self.psi_r[1:] - self.psi_r[:-1]) / self.DX_Hz[:-1]),
                                np.square(hbar * (self.psi_i[1:] - self.psi_i[:-1]) / self.DX_Hz[:-1])))),
@@ -889,7 +919,7 @@ class FDTD:
                 plt.close(momfig)
                 plt.close(Ekinfig)
                 while True:
-                    clear()
+                    # clear()
                     choice = input("Which animation or plot to view?\n" \
                                    "EM animation:      1\n" \
                                    "QM animation:      2\n"
@@ -935,7 +965,6 @@ class FDTD:
                 if self.there_is_qm:
                     Qanim.save('Psi.gif', writer='pillow')
         return endtime
-
 
 
 def UI_Size():
@@ -1203,7 +1232,7 @@ def Run():
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     10,10,10000000,10000000000000)
         elif choice == '4':                                                                                                                                                        #omega was 50e14
-            return testing(15e-7 ,15e-7,1,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=1000)
+            return testing(15e-7 ,15e-7,0,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=400)
         elif choice == '0':
             return Run()
 
@@ -1450,11 +1479,12 @@ sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
 # print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}" if not sim.there_is_qm else f"lmin = {sim.lmin*1e9:.2f} nm, tc = {sim.tc*1e9} ns, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
 # print(f"Grid size = {sim.Nx} x {sim.Ny}")
 # print(f"V max: {np.max(sim.V)}, T_osc: {2*np.pi / 50e14 }")
-
+sim.observables()
 import time
 start = time.time()
 end = sim.iterate(int(nt), visu = True, just1D=False, saving=False)
 print(f"Runtime: {end - start:.2f} seconds")
+
 def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
     # import matplotlib.pyplot as plt
     plt.figure(figsize=(6, 5))
@@ -1471,14 +1501,14 @@ def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
 psi_norm = np.sqrt(np.sum((sim.psi_r ** 2 + sim.psi_i**2) * sim.dx_fine ** 2))
 print(f'Norm of the wavefunction after the iterations: {psi_norm}')
 
-plot_potential(sim.V, sim.Xc, sim.Yc)
+# plot_potential(sim.V, sim.Xc, sim.Yc)
 # plot_potential(sim.QM_rel_x, sim.Xc, sim.Yc)
 # plot_potential(sim.QM_rel_y, sim.Xc, sim.Yc)
 
-#sim1 = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
-                    #10,10,10000000,10000000000000,['6,10','14,10']))2          These worked with an older version of the code , amount of timesteps was 1400 and the wave moved in the positive x direction
-#
+
 #frequency_analysis(sim1)
 #analytical_solution(sim_ob=sim1)
 #frequency_analysis(sim1)
 #analytical_solution(sim_ob=sim1)
+
+sim.observables()
