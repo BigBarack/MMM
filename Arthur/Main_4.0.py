@@ -1561,6 +1561,8 @@ Lx, Ly, PW, scatter_list, obs_dict_tuples, nt = Run()
 sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
 
 import time
+x1,y1 = sim.observables('pos')
+x_1_anal , y_1_anal = sim.classical_traj(0*sim.dt)
 start = time.time()
 end = sim.iterate(int(nt), visu = True, just1D=False, saving=False, validation=False)
 x2, y2 = sim.observables('pos')
