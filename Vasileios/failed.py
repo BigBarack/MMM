@@ -814,6 +814,7 @@ class FDTD:
 
 
     def classical_traj(self,time,x_0=0,y_0=0,vx_0=0,vy_0=0):
+        from scipy.integrate import quad
         # for x_shift=y_shift=0 and ground state we also have v_0=0
         # using Ehrenfest theorem, we see that the equation mimics classical solution:
         x_0 = self.x0
@@ -829,14 +830,30 @@ class FDTD:
         x=x_0 # if 0 it stays constant, if non-zero Ey should still not vary much since we are in length gauge
         A = self.A
         def E_t(time, x):
+            # analytical for gaussian source PW
             x_source = 20 * dx_coarse - x_well
             x_rel = x - x_source
             ey_analytical = A / (epsilon_0 * c) * (np.exp(-(x_rel / c + tc) ** 2 / (2 * s_pulse ** 2)) - np.exp(
                 -(time - x_rel / c - tc) ** 2 / (2 * s_pulse ** 2)))
             return ey_analytical
-        def integrand(tau, time, x ):
-            return E_t(tau,x) * np.sin(w * (time - tau))
-        from scipy.integrate import quad
+        if self.PW_type == 'sinusoidal':
+            omega_c = 2 * np.pi * self.fc
+        def integrand_analytical_sinusoidal(qt):
+            return (A * np.exp(-(qt - x / c - tc) ** 2 / (2 * s_pulse ** 2)) * (qt - tc - x / c) * np.sin(omega_c * qt) / (
+                        s_pulse ** 2 * c))
+        def E_t_sin(time,x):
+            x_source = 20 * dx_coarse - x_well
+            x_rel = x - x_source
+            result = quad(integrand_analytical_sinusoidal, 0, time)
+            return result[0]
+
+        if self.PW_type == 'gaussian':
+            def integrand(tau, time, x ):
+                return E_t(tau,x) * np.sin(w * (time - tau))
+        else:
+            def integrand(tau, time, x ):
+                return E_t_sin(tau,x) * np.sin(w * (time - tau))
+
 
         I = quad(integrand,0,time, args=(time,x))
         # print(f'Estimate of integral error {I[1]}')
@@ -1139,6 +1156,7 @@ def UI_PW():
     PW = { 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction, 'PW_type' : PW_type}
     if PW_type == 'sinusoidal':
         PW['fc'] = fc
+
     return(PW,nt)
 
 def UI_scatterers():
@@ -1311,10 +1329,11 @@ def Run():
                 "PEC circle: 1\n" \
                 "PMC circle: 2\n" \
                 "Drude circle: 3\n" \
-                "e-Well circle: 4\n" \
+                "e-Well circle & Gaussian pulse: 4\n" \
+                "e-Well circle & sinusoidal pulse: 5\n" \
                 "\n" \
                 "Return: 0\n")
-                assert choice in ['0','1','2','3','4']
+                assert choice in ['0','1','2','3','4','5']
                 break
             except AssertionError:
                 print("Please make a valid choice!\n")
@@ -1324,19 +1343,27 @@ def Run():
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'PMC')
         elif choice == '3':
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
-                    10,10,10000000,10000000000000)
+                    e_r=10,m_r=10,sigma=10000000,gamma=10000000000000)
         elif choice == '4':                                                                                                                                                        #omega was 50e14
             return testing(15e-7 ,15e-7,1e8,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=20000)
+        elif choice == '5':
+            return testing(15e-7 ,15e-7,1e8,3/(2*np.pi*(c/(10*5e-9))),'circle',7.5e-7,7.5e-7,2.5e-7,'e',PW_type='sinusoidal',fc=c/(10*5e-9) ,rel_m_eff=0.15*2, omega= 50e14, timesteps=10000)
         elif choice == '0':
             return Run()
 
 
-def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['0.0,0.0','0.0,0.0'], rel_m_eff=0.0, omega=0.0, timesteps=700):
+def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material, PW_type = 'gaussian',fc=1e10, e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['0.0,0.0','0.0,0.0'], rel_m_eff=0.0, omega=0.0, timesteps=700):
     # 1. size of sim area
     # Lx, Ly = map(float,input('Please provide the lengths Lx [cm] and Ly [cm] in Lx,Ly format: ').split(','))
     # 2. PW parameters
     # A, s_pulse = map(float,input('Please provide the amplitude A of the source and the pulse width sigma in A,sigma format').split(','))
-    l_min = 2 * np.pi * c * s_pulse / 3 # could also try / 5; w_max = 5 / s_pulse
+    if PW_type == 'gaussian':
+        l_min = 2 * np.pi * c * s_pulse / 3 # could also try / 5; w_max = 5 / s_pulse
+    else:
+        # fc = float(input('Please provide the central frequency fc [Hz]:\n'))
+        bandwidth = 0.44 / s_pulse
+        f_max = fc + bandwidth / 2
+        l_min = c / f_max
     dx_min = l_min / 20
     CFL = 1
     dt = CFL / ( c * np.sqrt((1 / dx_min ** 2) + (1 / dx_min ** 2)))   # time step from spatial disc. & CFL
@@ -1346,6 +1373,9 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, 
     # if bool(steps):
     #     dt,tc = map(float,steps.split(','))
     direction = '+x'
+
+
+
     PW_type = 'gaussian'
     PW = {'PW_type' : PW_type, 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction}
     # 3. scatterers
