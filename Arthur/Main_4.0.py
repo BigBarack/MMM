@@ -8,7 +8,7 @@ from matplotlib.ticker import MaxNLocator
 from scipy.special import hankel2
 from scipy.special import jv
 from scipy import ndimage
-from scipy import special   
+from scipy import special
 import time
 from tqdm import tqdm
 # from matplotlib import use
@@ -442,7 +442,7 @@ class FDTD:
         self.TFSFhright[tfi:-tfi , -tfi - 1] = 1
 
         self.TFSFeleft[tfi:-tfi , tfi-1] = 1
-        self.TFSFeright[tfi:-tfi, -tfi] = 1    
+        self.TFSFeright[tfi:-tfi, -tfi] = 1
 
         self.TFSFeup[tfi-1, tfi:-tfi ] = 1
         self.TFSFedown[-tfi, tfi:-tfi] = 1
@@ -1310,19 +1310,27 @@ def Run():
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'PMC')
         elif choice == '3':
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
-                    10,10,10000000,10000000000000)
+                    e_r=10,m_r=10,sigma=10000000,gamma=10000000000000)
         elif choice == '4':                                                                                                                                                        #omega was 50e14
-            return testing(15e-7 ,15e-7,5e8,80*(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15, omega= 50e14, timesteps=200000)
+            return testing(15e-7 ,15e-7,1e8,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=20000)
+        elif choice == '5':
+            return testing(15e-7 ,15e-7,1e8,3/(2*np.pi*(c/(10*5e-9))),'circle',7.5e-7,7.5e-7,2.5e-7,'e',PW_type='sinusoidal',fc=c/(10*5e-9) ,rel_m_eff=0.15*2, omega= 50e14, timesteps=10000)
         elif choice == '0':
             return Run()
 
 
-def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['7.5e-7,11.0e-7','11.0e-7,7.5e-7'], rel_m_eff=0.0, omega=0.0, timesteps=700):
+def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material, PW_type = 'gaussian',fc=1e10, e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['0.0,0.0','0.0,0.0'], rel_m_eff=0.0, omega=0.0, timesteps=700):
     # 1. size of sim area
     # Lx, Ly = map(float,input('Please provide the lengths Lx [cm] and Ly [cm] in Lx,Ly format: ').split(','))
     # 2. PW parameters
     # A, s_pulse = map(float,input('Please provide the amplitude A of the source and the pulse width sigma in A,sigma format').split(','))
-    l_min = 2 * np.pi * c * s_pulse / 3 # could also try / 5; w_max = 5 / s_pulse
+    if PW_type == 'gaussian':
+        l_min = 2 * np.pi * c * s_pulse / 3 # could also try / 5; w_max = 5 / s_pulse
+    else:
+        # fc = float(input('Please provide the central frequency fc [Hz]:\n'))
+        bandwidth = 0.44 / s_pulse
+        f_max = fc + bandwidth / 2
+        l_min = c / f_max
     dx_min = l_min / 20
     CFL = 1
     dt = CFL / ( c * np.sqrt((1 / dx_min ** 2) + (1 / dx_min ** 2)))   # time step from spatial disc. & CFL
@@ -1332,8 +1340,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, 
     # if bool(steps):
     #     dt,tc = map(float,steps.split(','))
     direction = '+x'
-    PW_type = 'sinusoidal'
-    PW = {'PW_type' : PW_type, 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction, 'fc' : omega/(2*np.pi)}
+    PW = {'PW_type' : PW_type, 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction}
     # 3. scatterers
     # shape = input('Please provide the shape of the scatterer (circle or rectangle or free or none): ')     #defien free later
     counter = 0
@@ -1373,7 +1380,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, 
 
 # to test the Drude implementation, copied numbers from graphene example of syllabus
 #  lamda ~ 5 micrometer -> ~ Thz freq
-# sigma_for_Thz = 5 / ( np.pi * 2) * 10**(-14)        # [a cm]  
+# sigma_for_Thz = 5 / ( np.pi * 2) * 10**(-14)        # [a cm]
 # lamda_for_Thz = 2 * np.pi * 10**8 * sigma_for_Thz # [cm]
 # L_for_Thz = 20 * lamda_for_Thz
 # g_for_Thz = 10**(-12)
