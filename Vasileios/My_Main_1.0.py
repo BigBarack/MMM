@@ -82,6 +82,29 @@ def laplacian_2D_4o(field,d):
     lap2 =  (-padded[2:-2,4:] + 16 * padded[2:-2,3:-1] - 30 * padded[2:-2,2:-2] + 16 * padded[2:-2,1:-3] - padded[2:-2,:-4]) / (12 * d**2)
     return lap1 + lap2
 
+
+
+def plot_observable(time_arr, dt_sim, dt_analytic, ylabel, title):
+    """
+    Plot simulation expectation values vs analytical expectation values over time.
+    Parameters:
+    :param time_arr: array of time points
+    :param dt_sim: simulation data (array)
+    :param dt_analytic: analytical data (array)
+    :param ylabel: label for y-axis (e.g., '<y> (nm)')
+    :param title: plot title
+    """
+    plt.figure(figsize=(6, 4))
+    plt.plot(time_arr * 1e15, dt_sim * 1e9, label='Simulation', lw=2)
+    plt.plot(time_arr * 1e15, dt_analytic * 1e9, '--', label='Analytical', lw=2)
+    plt.xlabel('Time (fs)')
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
 class ObservationPoint:
     def __init__(self,x,y):
         self.x = x
@@ -380,6 +403,8 @@ class FDTD:
                     r = scatterer.geometry['radius']
                     self.m_eff = scatterer.properties['m_eff']*m_e
                     omega = scatterer.properties['omega']
+                    self.omega= omega # store for analytical solution ( one well)
+                    self.x_well = xc    #store for analytical solution
                     self.get_V(xc,yc,r, self.m_eff, omega) # create each potential well
                     self.init_psi(xc,yc,scatterer.ID,self.m_eff,omega)
                     self.QM_rel_x[self.mask_Hz==scatterer.ID] = self.Xc[self.mask_Hz==scatterer.ID] - xc
@@ -489,7 +514,7 @@ class FDTD:
         potential = 0.5 * m * w**2 * (x_rel**2 + y_rel**2)
         self.V[mask] = potential[mask]
 
-    def init_psi(self,xc,yc,ID,m,w, n1=0, n2=0, x_shift=2,y_shift=0):
+    def init_psi(self,xc,yc,ID,m,w, n1=0, n2=0, x_shift=0,y_shift=0):
         """
         Initializes psi for n1=n2=0  coherent state of potential (stationary if no shift applied)
         :param xc: x of potential center
@@ -500,7 +525,9 @@ class FDTD:
         :return: updates the psi_r with local wavefunction
         """
         a = np.sqrt(m * w / hbar)
-        print(f'this is the shift: {x_shift * np.sqrt(2) / a *1e9}')
+        print(f'this is the shift: {(x_shift * np.sqrt(2) / a )*1e9}, {(y_shift * np.sqrt(2) / a )*1e9}')
+        self.x0 = (x_shift * np.sqrt(2) / a )
+        self.y0 = (y_shift * np.sqrt(2) / a)
         # print(f'Gaussian width sigma = {1/a}')
         x_rel = self.Xc - xc
         y_rel = self.Yc - yc
@@ -767,7 +794,8 @@ class FDTD:
         if which in ['pos', 'all']:
             x_exp = np.sum(prob * self.QM_rel_x * dx2)
             y_exp = np.sum(prob * self.QM_rel_y * dx2)
-            print(f'<x> = {x_exp*1e9} nm, <y> = {y_exp*1e9} nm')
+            # print(f'<x> = {x_exp*1e9} nm, <y> = {y_exp*1e9} nm')
+            return x_exp, y_exp
         if which in ['momentum' , 'all']:
             # dpsi/dx and dpsi/dy using central differences (collocated grid)
             dpsi_r_dx = (self.psi_r[:, 2:] - self.psi_r[:, :-2]) / (2 * self.dx_fine)
@@ -785,10 +813,43 @@ class FDTD:
 
 
 
+    def classical_traj(self,time,x_0=0,y_0=0,vx_0=0,vy_0=0):
+        # for x_shift=y_shift=0 and ground state we also have v_0=0
+        # using Ehrenfest theorem, we see that the equation mimics classical solution:
+        x_0 = self.x0
+        y_0 = self.y0
+        # print(f'x0,y0: {x_0,y_0}')    #debugger
+        w = self.omega
+        x_an = x_0 * np.cos(w*time) + vx_0/w * np.sin(w * time)
+        # parameters needed for Ey(t,x) calculation:
+        dx_coarse = self.dx_coarse
+        x_well = self.x_well
+        s_pulse = self.s_pulse
+        tc = self.tc
+        x=x_0 # if 0 it stays constant, if non-zero Ey should still not vary much since we are in length gauge
+        A = self.A
+        def E_t(time, x):
+            x_source = 20 * dx_coarse - x_well
+            x_rel = x - x_source
+            ey_analytical = A / (epsilon_0 * c) * (np.exp(-(x_rel / c + tc) ** 2 / (2 * s_pulse ** 2)) - np.exp(
+                -(time - x_rel / c - tc) ** 2 / (2 * s_pulse ** 2)))
+            return ey_analytical
+        def integrand(tau, time, x ):
+            return E_t(tau,x) * np.sin(w * (time - tau))
+        from scipy.integrate import quad
+
+        I = quad(integrand,0,time, args=(time,x))
+        # print(f'Estimate of integral error {I[1]}')
+        y_an = y_0 * np.cos(w*time) + vy_0/w * np.sin(w * time) + I[0] * (-q_e/(self.m_eff * w))
+        return x_an, y_an
 
 
 
-    def iterate(self, nt, visu=True, saving=False, just1D=False):
+
+
+
+
+    def iterate(self, nt, visu=True, saving=False, just1D=False, validation=False):
 
         if visu:
             fig, ax = plt.subplots()
@@ -839,8 +900,28 @@ class FDTD:
         if self.there_is_qm:
             print(f"V max: {np.max(sim.V)}, T_osc: {2 * np.pi / 50e14}")
 
+        if validation:
+            x_exp_sim_list = []
+            y_exp_sim_list = []
+            x_exp_ana_list = []
+            y_exp_ana_list = []
+            time_series = []
         for it in tqdm(range(0, nt), desc='Simulating'):
             t = (it - 1) * self.dt
+
+
+            if validation:
+                if it%10==0:
+                    xsim,ysim = self.observables('pos')
+                    xana, yana = self.classical_traj(t)
+                    x_exp_sim_list.append(xsim)
+                    y_exp_sim_list.append(ysim)
+                    x_exp_ana_list.append(xana)
+                    y_exp_ana_list.append(yana)
+                    time_series.append(t)
+
+
+
 
             if not using_tqdm and (it % max(1, nt // 20) == 0):
                 print(f'Simulating: {int(100 * it / nt):3d}% ({it:{len(str(nt))}d}/{nt})')
@@ -967,6 +1048,16 @@ class FDTD:
                 anim.save('H.gif', writer='pillow')
                 if self.there_is_qm:
                     Qanim.save('Psi.gif', writer='pillow')
+        #here
+        if validation:
+            x_exp_sim_arr= np.array(x_exp_sim_list)
+            y_exp_sim_arr = np.array(y_exp_sim_list)
+            x_exp_ana_arr= np.array(x_exp_ana_list)
+            y_exp_ana_arr= np.array(y_exp_ana_list)
+            time_series = np.array(time_series)
+            plot_observable(time_series,y_exp_sim_arr,y_exp_ana_arr,'<y> (nm)',f'<y> for 20000 timesteps & (x0,y0)=({self.x0*1e9:.2f},{self.y0*1e9:.2f})')
+            plot_observable(time_series, x_exp_sim_arr, x_exp_ana_arr, '<x> (nm)',
+                            f'<x> for 20000 timesteps & (x0,y0)=({self.x0*1e9:.2f},{self.y0*1e9:.2f})')
         return endtime
 
 
@@ -1235,7 +1326,7 @@ def Run():
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     10,10,10000000,10000000000000)
         elif choice == '4':                                                                                                                                                        #omega was 50e14
-            return testing(15e-7 ,15e-7,0,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=400)
+            return testing(15e-7 ,15e-7,1e8,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=20000)
         elif choice == '0':
             return Run()
 
@@ -1482,10 +1573,23 @@ sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
 # print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}" if not sim.there_is_qm else f"lmin = {sim.lmin*1e9:.2f} nm, tc = {sim.tc*1e9} ns, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
 # print(f"Grid size = {sim.Nx} x {sim.Ny}")
 # print(f"V max: {np.max(sim.V)}, T_osc: {2*np.pi / 50e14 }")
-sim.observables()
+
+x1,y1 = sim.observables('pos')
+x_1_anal , y_1_anal = sim.classical_traj(-1*sim.dt)
 import time
 start = time.time()
-end = sim.iterate(int(nt), visu = True, just1D=False, saving=False)
+end = sim.iterate(int(nt), visu = False, just1D=False, saving=False,validation=True)
+x2, y2 = sim.observables('pos')
+x_2_anal , y_2_anal = sim.classical_traj(2000*sim.dt)
+print('===========================================================')
+print(f'analytical expectation values: \n'
+      f' t=0: {x_1_anal*1e9}nm, {y_1_anal*1e9}nm \n'
+      f' t={2000 * sim.dt}: {x_2_anal*1e9}nm, {y_2_anal*1e9}nm')
+print('===========================================================')
+print(f'simulation expectation values: \n'
+      f'Sim of 10000 timesteps with x_0={x1*1e9:.2f}nm,y_0={y1*1e9:.2f}nm\n '
+      f'=> <x> = {(x2)*1e9}nm, <y> = {(y2)*1e9}nm')
+
 print(f"Runtime: {end - start:.2f} seconds")
 
 def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
@@ -1502,7 +1606,7 @@ def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
 
 
 psi_norm = np.sqrt(np.sum((sim.psi_r ** 2 + sim.psi_i**2) * sim.dx_fine ** 2))
-print(f'Norm of the wavefunction after the iterations: {psi_norm}')
+# print(f'Norm of the wavefunction after the iterations: {psi_norm}')
 
 # plot_potential(sim.V, sim.Xc, sim.Yc)
 # plot_potential(sim.QM_rel_x, sim.Xc, sim.Yc)
@@ -1514,4 +1618,3 @@ print(f'Norm of the wavefunction after the iterations: {psi_norm}')
 #frequency_analysis(sim1)
 #analytical_solution(sim_ob=sim1)
 
-sim.observables()
