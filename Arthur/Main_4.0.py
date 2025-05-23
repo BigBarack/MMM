@@ -856,14 +856,14 @@ class FDTD:
 
             if visu:
                 if not just1D:
-                    #movie.append(self.Hz.copy())
+                    movie.append(self.Hz.copy())
                     Exmovie.append(self.Ex[50,100])
                     Eymovie.append(self.Ey[50,100])
                     Hzmovie.append(self.Hz[50,100])
 
                 if self.there_is_qm:
                     prob = self.psi_r**2 + self.psi_i**2
-                    #Qmovie.append(prob.copy())
+                    Qmovie.append(prob.copy())
 
                     Qpos.append([np.sum(self.QM_rel_x * prob * self.dx_fine**2),
                                 -np.sum(self.QM_rel_y * prob * self.dx_fine**2)])
@@ -1300,7 +1300,7 @@ def Run():
                 "e-Well circle: 4\n" \
                 "\n" \
                 "Return: 0\n")
-                assert choice in ['0','1','2','3','4']
+                assert choice in ['0','1','2','3','4','5']
                 break
             except AssertionError:
                 print("Please make a valid choice!\n")
@@ -1312,7 +1312,7 @@ def Run():
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     e_r=10,m_r=10,sigma=10000000,gamma=10000000000000)
         elif choice == '4':                                                                                                                                                        #omega was 50e14
-            return testing(15e-7 ,15e-7,1e8,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=20000)
+            return testing(15e-7 ,15e-7,1e8,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=1000)
         elif choice == '5':
             return testing(15e-7 ,15e-7,1e8,3/(2*np.pi*(c/(10*5e-9))),'circle',7.5e-7,7.5e-7,2.5e-7,'e',PW_type='sinusoidal',fc=c/(10*5e-9) ,rel_m_eff=0.15*2, omega= 50e14, timesteps=10000)
         elif choice == '0':
