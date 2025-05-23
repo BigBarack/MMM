@@ -139,7 +139,7 @@ class Scatterer:
 
 class FDTD:
     def __init__(self, Lx:float , Ly:float , PW:dict , scatterer_list:list , observation_points:dict ):
-        self.m_eff = m_e*0.3 # temporary definition here
+        self.m_eff = m_e*0.15 # temporary definition here
 
         # sim area
         self.Lx = Lx * 0.01
@@ -487,7 +487,7 @@ class FDTD:
         potential = 0.5 * m * w**2 * (x_rel**2 + y_rel**2)
         self.V[mask] = potential[mask]
 
-    def init_psi(self,xc,yc,ID,m,w, n1=0, n2=0, x_shift=6,y_shift=0):
+    def init_psi(self,xc,yc,ID,m,w, n1=0, n2=0, x_shift=0,y_shift=0):
         """
         Initializes psi for n1=n2=0  coherent state of potential (stationary if no shift applied)
         :param xc: x of potential center
@@ -532,8 +532,8 @@ class FDTD:
                     # - self.dt / self.epsilon_yavg * self.Jqy[:,:]                                 # masking j-term is not necessary as long as psi is masked (dirichlet-BC)
 
         if self.there_is_qm:
-            self.Ex[self.maskQM_Ex] -= (self.dt / epsilon_0) * np.average(self.Jqx[self.maskQM_Ex])
-            self.Ey[self.maskQM_Ey] -= (self.dt / epsilon_0) * np.average(self.Jqy[self.maskQM_Ey])
+            self.Ex[self.maskQM_Ex] -= (self.dt / epsilon_0) * self.Jqx[self.maskQM_Ex]
+            self.Ey[self.maskQM_Ey] -= (self.dt / epsilon_0) * self.Jqy[self.maskQM_Ey]
 
         if self.there_is_Drude: #run ADEs to update Jc x,y then add that to currently calculated E
             for scatterer in self.scatterer_list:
@@ -650,7 +650,8 @@ class FDTD:
         if self.PW_type == 'gaussian':
             source_term = self.A * np.exp(-(time - self.tc)**2 / (2 * self.s_pulse**2))
         elif self.PW_type == 'sinusoidal':
-            source_term = self.A * np.exp(-(time - self.tc) ** 2 / (2 * self.s_pulse ** 2)) * np.sin(2 * np.pi * self.fc * time)
+            ramp = np.exp(-(time - self.tc)**2 / (2 * self.s_pulse**2)) if time < self.tc else 1.0
+            source_term = self.A * ramp * np.sin(2 * np.pi * self.fc * time)
         if self.direction == '+x' or self.direction == '-y':
             self.Hz_1D[0] = source_term
             self.auxbc1 = self.Hz_1D[-2]     #storing value of neighbour before updating
@@ -716,7 +717,7 @@ class FDTD:
         ax.invert_yaxis()
         plt.show()
 
-    def iterate(self, nt, visu=True, saving=False, just1D=False):
+    def iterate(self, nt, visu=True, saving=True, just1D=False):
         import matplotlib.pyplot as plt
         from matplotlib.animation import FuncAnimation
         import numpy as np
@@ -725,9 +726,16 @@ class FDTD:
 
         # Set up storage
         movie = []
+        Exmovie = []
+        Eymovie = []
+        Hzmovie = []
         Qmovie = []
         Qpos = []
         Qmom = []
+        Qposx = []
+        Qposy = []
+        Qmomx = []
+        Qmomy = []
         QEkin = []
 
         # Simulation info
@@ -746,14 +754,19 @@ class FDTD:
 
             if visu:
                 if not just1D:
-                    movie.append(self.Hz.copy())
+                    #movie.append(self.Hz.copy())
+                    Exmovie.append(self.Ex[50,100])
+                    Eymovie.append(self.Ey[50,100])
+                    Hzmovie.append(self.Hz[50,100])
 
                 if self.there_is_qm:
                     prob = self.psi_r**2 + self.psi_i**2
-                    Qmovie.append(prob.copy())
+                    #Qmovie.append(prob.copy())
 
-                    Qpos.append((np.sum(self.QM_rel_x * prob * self.dx_fine**2),
-                                -np.sum(self.QM_rel_y * prob * self.dx_fine**2)))
+                    Qpos.append([np.sum(self.QM_rel_x * prob * self.dx_fine**2),
+                                -np.sum(self.QM_rel_y * prob * self.dx_fine**2)])
+                    Qposx.append(np.sum(self.QM_rel_x * prob * self.dx_fine**2))
+                    Qposy.append(-np.sum(self.QM_rel_y * prob * self.dx_fine**2))
 
                     px = hbar * self.dx_fine**2 * np.sum(((self.psi_r[:, :-1] + self.psi_r[:, 1:]) / 2 * (self.psi_i[:, 1:] - self.psi_i[:, :-1]) / self.dx_fine)
                         - ((self.psi_i[:, :-1] + self.psi_i[:, 1:]) / 2 * (self.psi_r[:, 1:] - self.psi_r[:, :-1]) / self.dx_fine))
@@ -761,7 +774,9 @@ class FDTD:
                     py = hbar * self.dx_fine**2 * np.sum(((self.psi_r[1:, :] + self.psi_r[:-1, :]) / 2 * (self.psi_i[:-1, :] - self.psi_i[1:, :]) / self.dx_fine)
                         - ((self.psi_i[1:, :] + self.psi_i[:-1, :]) / 2 * (self.psi_r[:-1, :] - self.psi_r[1:, :]) / self.dx_fine))
 
-                    Qmom.append((px, py))
+                    Qmom.append([px, py])
+                    Qmomx.append(px)
+                    Qmomy.append(py)
                     QEkin.append((px**2 + py**2) / (2 * self.m_eff))
 
         print('Iterations done')
@@ -775,11 +790,15 @@ class FDTD:
             while True:
                 clear()
                 choice = input("Which animation or plot to view?\n"
-                            "EM animation:      1\n"
-                            "QM animation:      2\n"
-                            "Position plot:     3\n"
-                            "Momentum plot:     4\n"
-                            "Kinetic Energy:    5\n"
+                            "EM animation:          1\n"
+                            "QM animation:          2\n"
+                            "Position plot:         3\n"
+                            "Momentum plot:         4\n"
+                            "Kinetic Energy:        5\n"
+                            "E-field above well:    6\n"
+                            "H-field above well:    7\n"
+                            "Position (t):          8\n"
+                            "Momentum (t):          9\n"
                             "\n"
                             "Exit:              0\n")
                 plt.close('all')
@@ -788,8 +807,8 @@ class FDTD:
                     fig, ax = plt.subplots()
                     im = ax.pcolormesh(self.x_edges, np.flip(self.y_edges), movie[0], cmap='seismic',
                                     vmin=-np.max(movie), vmax=np.max(movie))
-                    #cbar = fig.colorbar(im, ax=ax)
-                    #cbar.set_label('Field Intensity')
+                    cbar = fig.colorbar(im, ax=ax)
+                    cbar.set_label('Field Intensity')
                     title = ax.text(0.5, 1.05, '', transform=ax.transAxes, ha='center', fontsize=12)
                     ax.set_xlabel('(m)')
                     ax.set_ylabel('(m)')
@@ -824,6 +843,8 @@ class FDTD:
                 elif choice == '3' and self.there_is_qm:
                     fig, ax = plt.subplots()
                     ax.plot(*zip(*Qpos))
+                    ax.annotate("", xytext=(0, 0), xy=(0.5, 0.5),
+                    arrowprops=dict(arrowstyle="->"))
                     ax.set_title("Position")
                     ax.set_xlabel('(m)')
                     ax.set_ylabel('(m)')
@@ -848,6 +869,41 @@ class FDTD:
                     ax.set_title("Kinetic Energy vs Time")
                     ax.set_xlabel('Timestep')
                     ax.set_ylabel('E_kin')
+                    plt.show()
+
+                elif choice == '6' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(Exmovie)
+                    ax.plot(Eymovie)
+                    ax.set_title("Efield")
+                    ax.set_xlabel('timestep')
+                    ax.set_ylabel('E-field (V/m)')
+                    plt.show()
+
+                elif choice == '7' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(Hzmovie)
+                    ax.set_title("Hfield")
+                    ax.set_xlabel('timestep')
+                    ax.set_ylabel('H-field (T)')
+                    plt.show()
+
+                elif choice == '8' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(Qposx)
+                    ax.plot(Qposy)
+                    ax.set_title("Position")
+                    ax.set_xlabel('timestep')
+                    ax.set_ylabel('x/y-axis (m)')
+                    plt.show()
+
+                elif choice == '9' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(Qmomx)
+                    ax.plot(Qmomy)
+                    ax.set_title("momentum")
+                    ax.set_xlabel('timestep')
+                    ax.set_ylabel('P_(x/y) (hbar*k)')
                     plt.show()
 
                 elif choice == '0':
@@ -1146,12 +1202,12 @@ def Run():
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     10,10,10000000,10000000000000)
         elif choice == '4':                                                                                                                                                        #omega was 50e14
-            return testing(15e-7 ,15e-7,1e9,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=1000)
+            return testing(15e-7 ,15e-7,5e8,80*(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15, omega= 50e14, timesteps=200000)
         elif choice == '0':
             return Run()
 
 
-def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['0.0,0.0','0.0,0.0'], rel_m_eff=0.0, omega=0.0, timesteps=700):
+def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['7.5e-7,11.0e-7','11.0e-7,7.5e-7'], rel_m_eff=0.0, omega=0.0, timesteps=700):
     # 1. size of sim area
     # Lx, Ly = map(float,input('Please provide the lengths Lx [cm] and Ly [cm] in Lx,Ly format: ').split(','))
     # 2. PW parameters
@@ -1166,8 +1222,8 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, 
     # if bool(steps):
     #     dt,tc = map(float,steps.split(','))
     direction = '+x'
-    PW_type = 'gaussian'
-    PW = {'PW_type' : PW_type, 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction}
+    PW_type = 'sinusoidal'
+    PW = {'PW_type' : PW_type, 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction, 'fc' : omega/(2*np.pi)}
     # 3. scatterers
     # shape = input('Please provide the shape of the scatterer (circle or rectangle or free or none): ')     #defien free later
     counter = 0
@@ -1207,7 +1263,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, 
 
 # to test the Drude implementation, copied numbers from graphene example of syllabus
 #  lamda ~ 5 micrometer -> ~ Thz freq
-# sigma_for_Thz = 5 / ( np.pi * 2) * 10**(-14)        # [a cm]
+# sigma_for_Thz = 5 / ( np.pi * 2) * 10**(-14)        # [a cm]  
 # lamda_for_Thz = 2 * np.pi * 10**8 * sigma_for_Thz # [cm]
 # L_for_Thz = 20 * lamda_for_Thz
 # g_for_Thz = 10**(-12)
