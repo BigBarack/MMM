@@ -8,7 +8,9 @@ from matplotlib.ticker import MaxNLocator
 from scipy.special import hankel2
 from scipy.special import jv
 from scipy import ndimage
-from scipy import special
+from scipy import special   
+import time
+from tqdm import tqdm
 # from matplotlib import use
 # use('TkAgg')
 
@@ -82,6 +84,28 @@ def laplacian_2D_4o(field,d):
     lap2 =  (-padded[2:-2,4:] + 16 * padded[2:-2,3:-1] - 30 * padded[2:-2,2:-2] + 16 * padded[2:-2,1:-3] - padded[2:-2,:-4]) / (12 * d**2)
     return lap1 + lap2
 
+
+def plot_observable(time_arr, dt_sim, dt_analytic, ylabel, title):
+    """
+    Plot simulation expectation values vs analytical expectation values over time.
+    Parameters:
+    :param time_arr: array of time points
+    :param dt_sim: simulation data (array)
+    :param dt_analytic: analytical data (array)
+    :param ylabel: label for y-axis (e.g., '<y> (nm)')
+    :param title: plot title
+    """
+    plt.figure(figsize=(6, 4))
+    plt.plot(time_arr * 1e15, dt_sim * 1e9, label='Simulation', lw=2)
+    plt.plot(time_arr * 1e15, dt_analytic * 1e9, '--', label='Analytical', lw=2)
+    plt.xlabel('Time (fs)')
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
 class ObservationPoint:
     def __init__(self,x,y):
         self.x = x
@@ -139,7 +163,7 @@ class Scatterer:
 
 class FDTD:
     def __init__(self, Lx:float , Ly:float , PW:dict , scatterer_list:list , observation_points:dict ):
-        self.m_eff = m_e*0.15 # temporary definition here
+
 
         # sim area
         self.Lx = Lx * 0.01
@@ -165,12 +189,13 @@ class FDTD:
         self.there_is_qm = any([scat.material == 'e' for scat in scatterer_list])
         self.dx_coarse = self.lmin / 10
         if self.there_is_qm:
+            self.m_eff = m_e  # temporary definition here
             # decouple source from spatial discretization, override with predetermined values
             # simple first, if works ok, automate with number of cells wanted in q.dot (well)
             self.dx_coarse = 0.1e-9
-            print(f'previous dt: {self.dt}')
+            # print(f'previous dt: {self.dt}')
             new_dt = (self.dx_coarse / 2 )/ (c * np.sqrt(2))
-            print(f'new dx leads to maximum dt: {new_dt}')
+            print(f'For electron well, overriding previous dt={self.dt} because of new dx leading to maximum dt: {new_dt}')
             self.dt = new_dt
             self.tc = 3 * self.s_pulse
         self.dx_inter1 = self.dx_coarse / ( 2 ** (1/3) )
@@ -380,6 +405,8 @@ class FDTD:
                     r = scatterer.geometry['radius']
                     self.m_eff = scatterer.properties['m_eff']*m_e
                     omega = scatterer.properties['omega']
+                    self.omega= omega # store for analytical solution ( one well)
+                    self.x_well = xc    #store for analytical solution
                     self.get_V(xc,yc,r, self.m_eff, omega) # create each potential well
                     self.init_psi(xc,yc,scatterer.ID,self.m_eff,omega)
                     self.QM_rel_x[self.mask_Hz==scatterer.ID] = self.Xc[self.mask_Hz==scatterer.ID] - xc
@@ -415,7 +442,7 @@ class FDTD:
         self.TFSFhright[tfi:-tfi , -tfi - 1] = 1
 
         self.TFSFeleft[tfi:-tfi , tfi-1] = 1
-        self.TFSFeright[tfi:-tfi, -tfi] = 1          
+        self.TFSFeright[tfi:-tfi, -tfi] = 1    
 
         self.TFSFeup[tfi-1, tfi:-tfi ] = 1
         self.TFSFedown[-tfi, tfi:-tfi] = 1
@@ -498,8 +525,10 @@ class FDTD:
         :return: updates the psi_r with local wavefunction
         """
         a = np.sqrt(m * w / hbar)
-        print(f'this is the shift: {x_shift * np.sqrt(2) / a *1e9}\n')
-        print(f'Gaussian width sigma = {1/a}\n')
+        print(f'this is the shift: {(x_shift * np.sqrt(2) / a )*1e9}, {(y_shift * np.sqrt(2) / a )*1e9}')
+        self.x0 = (x_shift * np.sqrt(2) / a)
+        self.y0 = (y_shift * np.sqrt(2) / a)
+        # print(f'Gaussian width sigma = {1/a}')
         x_rel = self.Xc - xc
         y_rel = self.Yc - yc
         mask = ndimage.binary_erosion(self.mask_Hz == ID)   # local e-well mask, not touching the boundary
@@ -511,7 +540,7 @@ class FDTD:
         psi_local /= norm
         self.psi_r[mask] = psi_local[mask]
         psi_norm = np.sqrt(np.sum(self.psi_r**2 * self.dx_fine**2))
-        print(psi_norm)
+        #print(psi_norm)
 
 
 
@@ -717,12 +746,65 @@ class FDTD:
         ax.invert_yaxis()
         plt.show()
 
-    def iterate(self, nt, visu=True, saving=True, just1D=False):
-        import matplotlib.pyplot as plt
-        from matplotlib.animation import FuncAnimation
-        import numpy as np
-        import time
-        from tqdm import tqdm
+    def observables(self, which='all'):
+        # probability density P= psi* x psi = Im^2 + Re^2
+        prob = self.psi_r ** 2 + self.psi_i ** 2
+        # print(f'test integral {np.sum(prob*self.dx_fine**2)}')      # integral probability in V
+        dx2=self.dx_fine**2
+        if which in ['pos', 'all']:
+            x_exp = np.sum(prob * self.QM_rel_x * dx2)
+            y_exp = np.sum(prob * self.QM_rel_y * dx2)
+            # print(f'<x> = {x_exp*1e9} nm, <y> = {y_exp*1e9} nm')
+            return x_exp, y_exp
+        if which in ['momentum' , 'all']:
+            # dpsi/dx and dpsi/dy using central differences (collocated grid)
+            dpsi_r_dx = (self.psi_r[:, 2:] - self.psi_r[:, :-2]) / (2 * self.dx_fine)
+            dpsi_i_dx = (self.psi_i[:, 2:] - self.psi_i[:, :-2]) / (2 * self.dx_fine)
+            dpsi_r_dy = (self.psi_r[2:,:] - self.psi_r[:-2, :]) / (2 * self.dx_fine)
+            dpsi_i_dy = (self.psi_i[2:,:] - self.psi_i[:-2, :]) / (2 * self.dx_fine)
+            # integral <px>=integ[psi* (-jd/dx)psi ]dx^2 & same for y, integral -> sum
+            px_exp = hbar * np.sum((self.psi_r[:,1:-1] * dpsi_i_dx - self.psi_i[:,1:-1] * dpsi_r_dx)*dx2)
+            py_exp = hbar * np.sum((self.psi_r[1:-1,:] * dpsi_i_dy - self.psi_i[1:-1,:] * dpsi_r_dy)*dx2)
+            print(f'momentum: <px> = {px_exp} , <py> = {py_exp}')
+        if which in ['kinetic', 'all']:
+            # kinetic energy T= -hbar^2 / 2m * Laplacial
+            T_exp = - hbar**2/(2*self.m_eff) * np.sum((self.psi_r * laplacian_2D_4o(self.psi_r,self.dx_fine) +  self.psi_i * laplacian_2D_4o(self.psi_i,self.dx_fine))*dx2)
+            print(f'kinetic energy: <T> = {T_exp}')
+
+
+
+    def classical_traj(self,time,x_0=0,y_0=0,vx_0=0,vy_0=0):
+        # for x_shift=y_shift=0 and ground state we also have v_0=0
+        # using Ehrenfest theorem, we see that the equation mimics classical solution:
+        x_0 = self.x0
+        y_0 = self.y0
+        # print(f'x0,y0: {x_0,y_0}')    #debugger
+        w = self.omega
+        x_an = x_0 * np.cos(w*time) + vx_0/w * np.sin(w * time)
+        # parameters needed for Ey(t,x) calculation:
+        dx_coarse = self.dx_coarse
+        x_well = self.x_well
+        s_pulse = self.s_pulse
+        tc = self.tc
+        x=x_0 # if 0 it stays constant, if non-zero Ey should still not vary much since we are in length gauge
+        A = self.A
+        def E_t(time, x):
+            x_source = 20 * dx_coarse - x_well
+            x_rel = x - x_source
+            ey_analytical = A / (epsilon_0 * c) * (np.exp(-(x_rel / c + tc) ** 2 / (2 * s_pulse ** 2)) - np.exp(
+                -(time - x_rel / c - tc) ** 2 / (2 * s_pulse ** 2)))
+            return ey_analytical
+        def integrand(tau, time, x ):
+            return E_t(tau,x) * np.sin(w * (time - tau))
+        from scipy.integrate import quad
+
+        I = quad(integrand,0,time, args=(time,x))
+        # print(f'Estimate of integral error {I[1]}')
+        y_an = y_0 * np.cos(w*time) + vy_0/w * np.sin(w * time) + I[0] * (-q_e/(self.m_eff * w))
+        return x_an, y_an
+
+
+    def iterate(self, nt, visu=True, saving=True, just1D=False, validation=False):
 
         # Set up storage
         movie = []
@@ -746,9 +828,29 @@ class FDTD:
         print(f"Grid size = {sim.Nx} x {sim.Ny}")
         if self.there_is_qm:
             print(f"V max: {np.max(sim.V):.2e}, T_osc: {2*np.pi / 50e14 :.2e} s")
-
+        if validation:
+            x_exp_sim_list = []
+            y_exp_sim_list = []
+            x_exp_ana_list = []
+            y_exp_ana_list = []
+            time_series = []
         for it in tqdm(range(nt), desc="Simulating"):
             t = (it - 1) * self.dt
+
+            if validation:
+                if it%10==0:
+                    xsim,ysim = self.observables('pos')
+                    xana, yana = self.classical_traj(t)
+                    x_exp_sim_list.append(xsim)
+                    y_exp_sim_list.append(ysim)
+                    x_exp_ana_list.append(xana)
+                    y_exp_ana_list.append(yana)
+                    time_series.append(t)
+
+            if not using_tqdm and (it % max(1, nt // 20) == 0):
+                print(f'Simulating: {int(100 * it / nt):3d}% ({it:{len(str(nt))}d}/{nt})')
+
+
             self.source_pw(t)
             self.update()
 
@@ -932,7 +1034,15 @@ class FDTD:
 
             anim = FuncAnimation(fig, update_em, frames=len(movie), blit=True, interval=2)
             plt.show()
-                
+        if validation:
+            x_exp_sim_arr= np.array(x_exp_sim_list)
+            y_exp_sim_arr = np.array(y_exp_sim_list)
+            x_exp_ana_arr= np.array(x_exp_ana_list)
+            y_exp_ana_arr= np.array(y_exp_ana_list)
+            time_series = np.array(time_series)
+            plot_observable(time_series,y_exp_sim_arr,y_exp_ana_arr,'<y> (nm)',f'<y> for 20000 timesteps & (x0,y0)=({self.x0*1e9:.2f},{self.y0*1e9:.2f})')
+            plot_observable(time_series, x_exp_sim_arr, x_exp_ana_arr, '<x> (nm)',
+                            f'<x> for 20000 timesteps & (x0,y0)=({self.x0*1e9:.2f},{self.y0*1e9:.2f})')
         return endtime
 
 
@@ -1445,7 +1555,18 @@ sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
 
 import time
 start = time.time()
-end = sim.iterate(int(nt), visu = True, just1D=False, saving=False)
+end = sim.iterate(int(nt), visu = True, just1D=False, saving=False, validation=False)
+x2, y2 = sim.observables('pos')
+x_2_anal , y_2_anal = sim.classical_traj(2000*sim.dt)
+clear()
+print('===========================================================')
+print(f'analytical expectation values: \n'
+      f' t=0: {x_1_anal*1e9}nm, {y_1_anal*1e9}nm \n'
+      f' t={2000 * sim.dt}: {x_2_anal*1e9}nm, {y_2_anal*1e9}nm')
+print('===========================================================')
+print(f'simulation expectation values: \n'
+      f'Sim of 10000 timesteps with x_0={x1*1e9:.2f}nm,y_0={y1*1e9:.2f}nm\n '
+      f'=> <x> = {(x2)*1e9}nm, <y> = {(y2)*1e9}nm')
 clear()
 print(f"Runtime core simulation: {end - start:.2f} seconds")
 def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
