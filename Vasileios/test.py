@@ -3,12 +3,14 @@ from os import system, name
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 from matplotlib.collections import LineCollection
-from matplotlib.animation import ArtistAnimation
+from matplotlib.animation import ArtistAnimation, FuncAnimation
 from matplotlib.ticker import MaxNLocator
 from scipy.special import hankel2
 from scipy.special import jv
 from scipy import ndimage
-from scipy import special
+from scipy import special   
+import time
+from tqdm import tqdm
 # from matplotlib import use
 # use('TkAgg')
 
@@ -81,7 +83,6 @@ def laplacian_2D_4o(field,d):
     lap1 =  (-padded[4:,2:-2] + 16 * padded[3:-1,2:-2] - 30 * padded[2:-2,2:-2] + 16 * padded[1:-3,2:-2] - padded[:-4,2:-2]) / (12 * d**2)
     lap2 =  (-padded[2:-2,4:] + 16 * padded[2:-2,3:-1] - 30 * padded[2:-2,2:-2] + 16 * padded[2:-2,1:-3] - padded[2:-2,:-4]) / (12 * d**2)
     return lap1 + lap2
-
 
 
 def plot_observable(time_arr, dt_sim, dt_analytic, ylabel, title):
@@ -162,6 +163,8 @@ class Scatterer:
 
 class FDTD:
     def __init__(self, Lx:float , Ly:float , PW:dict , scatterer_list:list , observation_points:dict ):
+
+
         # sim area
         self.Lx = Lx * 0.01
         self.Ly = Ly * 0.01
@@ -198,7 +201,6 @@ class FDTD:
         self.dx_inter1 = self.dx_coarse / ( 2 ** (1/3) )
         self.dx_inter2 = self.dx_inter1 / ( 2 ** (1/3) )
         self.dx_fine = self.dx_coarse / 2
-
 
 
 
@@ -440,7 +442,7 @@ class FDTD:
         self.TFSFhright[tfi:-tfi , -tfi - 1] = 1
 
         self.TFSFeleft[tfi:-tfi , tfi-1] = 1
-        self.TFSFeright[tfi:-tfi, -tfi] = 1
+        self.TFSFeright[tfi:-tfi, -tfi] = 1    
 
         self.TFSFeup[tfi-1, tfi:-tfi ] = 1
         self.TFSFedown[-tfi, tfi:-tfi] = 1
@@ -475,11 +477,9 @@ class FDTD:
             obs.coordinates['ey'] = (iy_from_edges,ix_from_c)
 
         self.update_observation_points()
-
         # print(f'current dt {self.dt}')
         # qm_dt= 2 / (( 8*hbar/(3*m_e*0.15) * (2/self.dx_fine**2)) + (1/hbar * np.max(self.V) ))
         # print(f'qm dt : {qm_dt}') # STABILITY
-
 
     def in_refined_region(self, pos:float , axis:str):
         """
@@ -526,7 +526,7 @@ class FDTD:
         """
         a = np.sqrt(m * w / hbar)
         print(f'this is the shift: {(x_shift * np.sqrt(2) / a )*1e9}, {(y_shift * np.sqrt(2) / a )*1e9}')
-        self.x0 = (x_shift * np.sqrt(2) / a )
+        self.x0 = (x_shift * np.sqrt(2) / a)
         self.y0 = (y_shift * np.sqrt(2) / a)
         # print(f'Gaussian width sigma = {1/a}')
         x_rel = self.Xc - xc
@@ -540,8 +540,7 @@ class FDTD:
         psi_local /= norm
         self.psi_r[mask] = psi_local[mask]
         psi_norm = np.sqrt(np.sum(self.psi_r**2 * self.dx_fine**2))
-        # print(psi_norm)
-
+        #print(psi_norm)
 
 
 
@@ -649,63 +648,23 @@ class FDTD:
             ex = field_avg(self.Ex,'vertical')
             ey = field_avg(self.Ey, 'horizontal')
 
-            # self.psi_r[self.maskQM] -= self.dt/hbar *( (hbar**2/(2*self.m_eff)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM]
-            #                                                    + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_i[self.maskQM]
-            #                                                    + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_i[self.maskQM]
-            #                                                    - self.V[self.maskQM] * self.psi_i[self.maskQM] )
-            #
-            # self.psi_i[self.maskQM] += self.dt/hbar *( (hbar**2/(2*self.m_eff)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM]
-            #                                                    + q_e * ex[self.maskQM] * self.Xc[self.maskQM] * self.psi_r[self.maskQM]
-            #                                                    + q_e * ey[self.maskQM] * self.Yc[self.maskQM] * self.psi_r[self.maskQM]
-            #                                                    - self.V[self.maskQM] * self.psi_r[self.maskQM] )
-            #
-            self.psi_r[self.maskQM] -= self.dt/hbar *( (hbar**2/(2*self.m_eff)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM]
+            self.psi_r[self.maskQM] -= self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_i,self.dx_fine)[self.maskQM]
                                                                + q_e * ex[self.maskQM] * self.QM_rel_x[self.maskQM] * self.psi_i[self.maskQM]
                                                                + q_e * ey[self.maskQM] * self.QM_rel_y[self.maskQM] * self.psi_i[self.maskQM]
                                                                - self.V[self.maskQM] * self.psi_i[self.maskQM] )
 
-            self.psi_i[self.maskQM] += self.dt/hbar *( (hbar**2/(2*self.m_eff)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM]
+            self.psi_i[self.maskQM] += self.dt/hbar *( (hbar**2/(2*m_e*effect_m)) * laplacian_2D_4o(self.psi_r,self.dx_fine)[self.maskQM]
                                                                + q_e * ex[self.maskQM] * self.QM_rel_x[self.maskQM] * self.psi_r[self.maskQM]
                                                                + q_e * ey[self.maskQM] * self.QM_rel_y[self.maskQM] * self.psi_r[self.maskQM]
                                                                - self.V[self.maskQM] * self.psi_r[self.maskQM] )
 
-
             # Calculate Jx and Jy
             q = -q_e
-
-            # Jqx_sub = N*q*hbar/(2*m_e*effect_m*self.dx_fine) * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
-            # self.Jqx = np.pad((Jqx_sub[1:,:]+Jqx_sub[:-1,:])/2,((0,0),(1,0)),'constant',constant_values=0)
-            # Jqy_sub = N*q*hbar/(2*m_e*effect_m*self.dx_fine) * (self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:])-self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:]))
-            # self.Jqy = np.pad((Jqy_sub[:,1:]+Jqy_sub[:,:-1])/2,((1,0),(0,0)),'constant',constant_values=0)
-            # self.psi_i_old = self.psi_i
-
-            # temporal average
-            # psi_i_temp_avg = 0.5 * (self.psi_i + self.psi_i_old)                                #shape (Ny,Nx)
-            # # d/dx
-            # dpsi_i_t_dx = (psi_i_temp_avg[:, 1:] - psi_i_temp_avg[:, :-1]) / self.dx_fine       #shape (Ny,Nx-1)
-            # dpsi_r_dx = (self.psi_r[:,1:] - self.psi_r[:,:-1]) / self.dx_fine                   #shape (Ny,Nx-1)
-            # # vertical averaging of derivative to match Ex edges
-            # dpsi_i_t_dx_avg = field_avg(dpsi_i_t_dx,'vertical',False)                             #shape (Ny-1,Nx-1)
-            # dpsi_r_dx_avg = field_avg(dpsi_r_dx,'vertical',False)                                 #shape (Ny-1,Nx-1)
-            # # psi_r & psi_i averaged horizontally and then vertically
-            # psi_r_avg_h = field_avg(self.psi_r,'horizontal',False)                                #shape (Ny,Nx-1)
-            # psi_r_avg   = field_avg(psi_r_avg_h,'vertical',False)                                 #shape (Ny-1,Nx-1)
-            # psi_i_avg_h = field_avg(psi_i_temp_avg,'horizontal',False)
-            # psi_i_avg   = field_avg(psi_i_avg_h,'vertical',False)
-            # # Jx calc
-            # self.Jqx[:,:-1] = N*q*hbar/(m_e*effect_m) * (psi_r_avg * dpsi_i_t_dx_avg - psi_i_avg * dpsi_r_dx_avg )
-            # # d/dy
-            # dpsi_i_t_dy = (psi_i_temp_avg[1:,:] - psi_i_temp_avg[:-1,:]) / self.dx_fine       #shape (Ny-1,Nx)
-            # dpsi_r_dy = (self.psi_r[1:,:] - self.psi_r[:-1,:]) / self.dx_fine                 #shape (Ny-1,Nx)
-            # # horizontal avg of derivative to match Ey
-            # dpsi_i_t_dy_avg = field_avg(dpsi_i_t_dy,'horizontal',False)                        #shape (Ny-1,Nx-1)
-            # dpsi_r_dy_avg = field_avg(dpsi_r_dy,'horizontal',False)                            #shape (Ny-1,Nx-1)
-            # # Jy calc
-            # self.Jqy[:-1,:] = N*q*hbar/(m_e*effect_m) * (psi_r_avg * dpsi_i_t_dy_avg - psi_i_avg * dpsi_r_dy_avg )
-            # self.psi_i_old = self.psi_i
-
-
-
+            Jqx_sub = N*q*hbar/(2*m_e*effect_m) * 1/self.dx_fine * (self.psi_r[:,:-1]*(self.psi_i[:,1:]+self.psi_i_old[:,1:])-self.psi_r[:,1:]*(self.psi_i[:,:-1]+self.psi_i_old[:,:-1]))
+            self.Jqx = np.pad((Jqx_sub[1:,:]+Jqx_sub[:-1,:])/2,((0,0),(1,0)),'constant',constant_values=(0))
+            Jqy_sub = N*q*hbar/(2*m_e*effect_m) * 1/self.dx_fine * (self.psi_r[1:,:]*(self.psi_i[:-1,:]+self.psi_i_old[:-1,:])-self.psi_r[:-1,:]*(self.psi_i[1:,:]+self.psi_i_old[1:,:]))
+            self.Jqy = np.pad((Jqy_sub[:,1:]+Jqy_sub[:,:-1])/2,((1,0),(0,0)),'constant',constant_values=(0))
+            self.psi_i_old = self.psi_i
 
 
         #
@@ -720,7 +679,8 @@ class FDTD:
         if self.PW_type == 'gaussian':
             source_term = self.A * np.exp(-(time - self.tc)**2 / (2 * self.s_pulse**2))
         elif self.PW_type == 'sinusoidal':
-            source_term = self.A * np.exp(-(time - self.tc) ** 2 / (2 * self.s_pulse ** 2)) * np.sin(2 * np.pi * self.fc * time)
+            ramp = np.exp(-(time - self.tc)**2 / (2 * self.s_pulse**2)) if time < self.tc else 1.0
+            source_term = self.A * ramp * np.sin(2 * np.pi * self.fc * time)
         if self.direction == '+x' or self.direction == '-y':
             self.Hz_1D[0] = source_term
             self.auxbc1 = self.Hz_1D[-2]     #storing value of neighbour before updating
@@ -844,71 +804,38 @@ class FDTD:
         return x_an, y_an
 
 
+    def iterate(self, nt, visu=True, saving=True, just1D=False, validation=False):
 
+        # Set up storage
+        movie = []
+        Exmovie = []
+        Eymovie = []
+        Hzmovie = []
+        Qmovie = []
+        Qpos = []
+        Qmom = []
+        Qposx = []
+        Qposy = []
+        Qmomx = []
+        Qmomy = []
+        QEkin = []
 
-
-
-
-    def iterate(self, nt, visu=True, saving=False, just1D=False, validation=False):
-
-        if visu:
-            fig, ax = plt.subplots()
-            ax.set_xlabel('(m)')
-            ax.set_ylabel('(m)')
-
-            ax.invert_yaxis()
-            plt.axis('equal')
-
-        if self.there_is_qm and visu:
-            Qfig, Qax = plt.subplots()
-            Qax.set_xlabel('(m)')
-            Qax.set_ylabel('(m)')
-            Qax.invert_yaxis()
-            plt.axis('equal')
-            Qmovie = []
-
-            posfig, posax = plt.subplots()
-            Qpos = []
-            posax.set_xlabel('(m)')
-            posax.set_ylabel('(m)')
-            plt.axis('equal')
-
-            momfig, momax = plt.subplots()
-            Qmom = []
-            momax.set_xlabel('(m)')
-            momax.set_ylabel('(m)')
-            plt.axis('equal')
-
-            Ekinfig, Ekinax = plt.subplots()
-            QEkin = []
-
-        if visu:
-            movie = []
-            binary = plt.cm.binary(np.linspace(0, 1, 256))
-            alphas = np.linspace(0.0, 1.0, 256)
-            binary[:, -1] = alphas
-            binary_alpha = ListedColormap(binary)
-
-        # clear()
-        print(
-            f"Lx = {sim.Lx}, Ly = {sim.Ly}" if not sim.there_is_qm else f"Lx = {sim.Lx * 1e9:.2f} nm, Ly = {sim.Ly * 1e9:.2f} nm")
-        print(
-            f"dt = {sim.dt}, nt = {nt}, dx_fine = {sim.dx_fine}" if not sim.there_is_qm else f"dt = {sim.dt * 1e9} ns, nt = {nt}, dx_fine = {sim.dx_fine * 1e9:.2f} nm")
-        print(
-            f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}" if not sim.there_is_qm else f"lmin = {sim.lmin * 1e9:.2f} nm, tc = {sim.tc * 1e9} ns, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
+        # Simulation info
+        clear()
+        print(f"Lx = {sim.Lx:.2e} m, Ly = {sim.Ly:.2e} m")
+        print(f"dt = {sim.dt:.2e} s, nt = {nt}, dx = {sim.dx_fine:.2e} m")
+        print(f"lmin = {sim.lmin:.2e} m, tc = {sim.tc:.2e} s, A = {sim.A}, sigma = {sim.s_pulse}, dir = {sim.direction}")
         print(f"Grid size = {sim.Nx} x {sim.Ny}")
         if self.there_is_qm:
-            print(f"V max: {np.max(sim.V)}, T_osc: {2 * np.pi / 50e14}")
-
+            print(f"V max: {np.max(sim.V):.2e}, T_osc: {2*np.pi / 50e14 :.2e} s")
         if validation:
             x_exp_sim_list = []
             y_exp_sim_list = []
             x_exp_ana_list = []
             y_exp_ana_list = []
             time_series = []
-        for it in tqdm(range(0, nt), desc='Simulating'):
+        for it in tqdm(range(nt), desc="Simulating"):
             t = (it - 1) * self.dt
-
 
             if validation:
                 if it%10==0:
@@ -920,135 +847,193 @@ class FDTD:
                     y_exp_ana_list.append(yana)
                     time_series.append(t)
 
-
-
-
             if not using_tqdm and (it % max(1, nt // 20) == 0):
                 print(f'Simulating: {int(100 * it / nt):3d}% ({it:{len(str(nt))}d}/{nt})')
 
-            # hard point source used before PW was implemented
 
-            # y_source = sim.Ny // 2
-            # x_source = sim.Ny // 3
-            # source = self.A * np.exp(-(t - self.tc)**2 / (2 * self.s_pulse**2))
-            # self.Hz[y_source, x_source] += source  # Adding source term to propagation
-
-            self.source_pw(t)  # update incident field for TFSF
-            self.update()  # Propagate over one time step
+            self.source_pw(t)
+            self.update()
 
             if visu:
-                if just1D:
-                    artists = [
-                        ax.plot(np.arange(0, len(self.Hz_1D)), self.Hz_1D, color='r', label='Hz_1D')[0],
-                        ax.plot(np.arange(0, len(self.E_inc)), self.E_inc, color='b', label='E_inc')[0],
-                        ax.text(0.5, 1.05, '%d/%d' % (it, nt),
-                                size=plt.rcParams["axes.titlesize"],
-                                ha="center", transform=ax.transAxes)
-                    ]
-                else:
-                    artists = [
-                        ax.text(0.5, 1.05, '%d/%d' % (it, nt),
-                                size=plt.rcParams["axes.titlesize"],
-                                ha="center", transform=ax.transAxes),
-                        ax.pcolormesh(self.x_edges, self.y_edges, self.Hz, vmin=-1 * self.A, vmax=1 * self.A,
-                                      cmap='seismic', )
-                    ]
+                if not just1D:
+                    #movie.append(self.Hz.copy())
+                    Exmovie.append(self.Ex[50,100])
+                    Eymovie.append(self.Ey[50,100])
+                    Hzmovie.append(self.Hz[50,100])
 
-                for obs in sim.observation_points.values():
-                    artists.append(ax.plot(obs.x, obs.y, 'ko', fillstyle="none")[0])
-                if self.there_is_PMC:
-                    artists.append(
-                        ax.contourf(self.x_edges[:-1], self.y_edges[:-1], self.maskPMCz, cmap=binary_alpha, vmin=0,
-                                    vmax=1))
-                if self.there_is_PEC:
-                    artists.append(
-                        ax.contourf(self.x_edges[1:-1], self.y_edges[:-1], self.maskPECy, cmap=binary_alpha, vmin=0,
-                                    vmax=1))
                 if self.there_is_qm:
-                    prob = np.sqrt(self.psi_r ** 2 + self.psi_i ** 2)
-                    artists.append(
-                        ax.contourf(self.x_edges[:-1], self.y_edges[:-1], self.boundarymaskQM, cmap=binary_alpha,
-                                    vmin=0, vmax=1))
-                    Qartists = [
-                        Qax.text(0.5, 1.05, '%d/%d' % (it, nt),
-                                 size=plt.rcParams["axes.titlesize"],
-                                 ha="center", transform=ax.transAxes),
-                        Qax.pcolormesh(self.x_edges, self.y_edges, prob, cmap='seismic', )
-                    ]
-                    Qmovie.append(Qartists)
-                    Qartists.append(
-                        Qax.contourf(self.x_edges[:-1], self.y_edges[:-1], self.boundarymaskQM, cmap=binary_alpha,
-                                     vmin=0, vmax=1))
-                    # Qpos.append((np.average(np.multiply(self.Xc, prob)), np.average(np.multiply(self.Yc, prob))))
-                    x_exp = np.sum(prob * self.QM_rel_x * self.dx_fine)
-                    y_exp = np.sum(prob * self.QM_rel_y * self.dx_fine)
-                    Qpos.append((x_exp,y_exp))
-                    Qmom.append((np.average(np.sqrt(
-                        np.add(np.square(hbar * (self.psi_r[1:] - self.psi_r[:-1]) / self.DX_Hz[:-1]),
-                               np.square(hbar * (self.psi_i[1:] - self.psi_i[:-1]) / self.DX_Hz[:-1])))),
-                                 np.average(np.sqrt(np.add(
-                                     np.square(hbar * (self.psi_r[:, 1:] - self.psi_r[:, :-1]) / self.DY_Hz[:, :-1]),
-                                     np.square(
-                                         hbar * (self.psi_i[:, 1:] - self.psi_i[:, :-1]) / self.DY_Hz[:, :-1]))))))
-                    QEkin.append((np.square(Qmom[-1][0]) + np.square(Qmom[-1][1])) / (2 * self.m_eff))
-                movie.append(artists)
+                    prob = self.psi_r**2 + self.psi_i**2
+                    #Qmovie.append(prob.copy())
+
+                    Qpos.append([np.sum(self.QM_rel_x * prob * self.dx_fine**2),
+                                -np.sum(self.QM_rel_y * prob * self.dx_fine**2)])
+                    Qposx.append(np.sum(self.QM_rel_x * prob * self.dx_fine**2))
+                    Qposy.append(-np.sum(self.QM_rel_y * prob * self.dx_fine**2))
+
+                    px = hbar * self.dx_fine**2 * np.sum(((self.psi_r[:, :-1] + self.psi_r[:, 1:]) / 2 * (self.psi_i[:, 1:] - self.psi_i[:, :-1]) / self.dx_fine)
+                        - ((self.psi_i[:, :-1] + self.psi_i[:, 1:]) / 2 * (self.psi_r[:, 1:] - self.psi_r[:, :-1]) / self.dx_fine))
+
+                    py = hbar * self.dx_fine**2 * np.sum(((self.psi_r[1:, :] + self.psi_r[:-1, :]) / 2 * (self.psi_i[:-1, :] - self.psi_i[1:, :]) / self.dx_fine)
+                        - ((self.psi_i[1:, :] + self.psi_i[:-1, :]) / 2 * (self.psi_r[:-1, :] - self.psi_r[1:, :]) / self.dx_fine))
+
+                    Qmom.append([px, py])
+                    Qmomx.append(px)
+                    Qmomy.append(py)
+                    QEkin.append((px**2 + py**2) / (2 * self.m_eff))
 
         print('Iterations done')
         endtime = time.time()
-        if visu:
-            if self.there_is_qm:
-                plt.close(fig)
-                plt.close(Qfig)
-                plt.close(posfig)
-                plt.close(momfig)
-                plt.close(Ekinfig)
-                while True:
-                    # clear()
-                    choice = input("Which animation or plot to view?\n" \
-                                   "EM animation:      1\n" \
-                                   "QM animation:      2\n"
-                                   "Position plot:     3\n"
-                                   "Momentum plot:     4\n"
-                                   "Kinetic Energy:    5\n"
-                                   "\n"
-                                   "Exit:              0\n")
-                    plt.close()
-                    if choice == '1':
-                        anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
-                        fig.show()
-                        plt.show()
-                        plt.close(fig)
-                    elif choice == '2':
-                        Qanim = ArtistAnimation(Qfig, Qmovie, interval=10, repeat_delay=1000, blit=True)
-                        Qfig.show()
-                        plt.show()
-                        plt.close(Qfig)
-                    elif choice == '3':
-                        posax.plot(*zip(*Qpos))
-                        posfig.show()
-                        plt.show()
-                        plt.close(posfig)
-                    elif choice == '4':
-                        momax.plot(*zip(*Qmom))
-                        momfig.show()
-                        plt.show()
-                        plt.close(momfig)
-                    elif choice == '5':
-                        Ekinax.plot(QEkin)
-                        Ekinfig.show()
-                        plt.show()
-                        plt.close(Ekinfig)
-                    elif choice == '0':
-                        break
-            else:
-                anim = ArtistAnimation(fig, movie, interval=10, repeat_delay=1000, blit=True)
-                fig.show()
-                plt.show()
-            if saving:
-                anim.save('H.gif', writer='pillow')
-                if self.there_is_qm:
-                    Qanim.save('Psi.gif', writer='pillow')
-        #here
+
+        if not visu:
+            return endtime
+
+        # Interactive viewer
+        if self.there_is_qm:
+            while True:
+                clear()
+                choice = input("Which animation or plot to view?\n"
+                            "EM animation:          1\n"
+                            "QM animation:          2\n"
+                            "Position plot:         3\n"
+                            "Momentum plot:         4\n"
+                            "Kinetic Energy:        5\n"
+                            "E-field above well:    6\n"
+                            "H-field above well:    7\n"
+                            "Position (t):          8\n"
+                            "Momentum (t):          9\n"
+                            "\n"
+                            "Exit:              0\n")
+                plt.close('all')
+
+                if choice == '1':
+                    fig, ax = plt.subplots()
+                    im = ax.pcolormesh(self.x_edges, np.flip(self.y_edges), movie[0], cmap='seismic',
+                                    vmin=-np.max(movie), vmax=np.max(movie))
+                    cbar = fig.colorbar(im, ax=ax)
+                    cbar.set_label('Field Intensity')
+                    title = ax.text(0.5, 1.05, '', transform=ax.transAxes, ha='center', fontsize=12)
+                    ax.set_xlabel('(m)')
+                    ax.set_ylabel('(m)')
+                    ax.set_aspect('equal')
+
+                    def update_em(it):
+                        im.set_array(movie[it])
+                        title.set_text(f'Timestep {it}')
+                        return [im, title]
+
+                    anim = FuncAnimation(fig, update_em, frames=len(movie), blit=True, interval=0.5)
+                    plt.show()
+
+                elif choice == '2' and self.there_is_qm:
+                    Qfig, Qax = plt.subplots()
+                    qim = Qax.pcolormesh(self.x_edges, np.flip(self.y_edges), Qmovie[0], cmap='seismic', vmin=0, vmax=np.max(Qmovie))
+                    qbar = Qfig.colorbar(qim, ax=Qax)
+                    qbar.set_label('Probability Density')
+                    qtitle = Qax.text(0.5, 1.05, '', transform=Qax.transAxes, ha='center', fontsize=12)
+                    Qax.set_xlabel('(m)')
+                    Qax.set_ylabel('(m)')
+                    Qax.set_aspect('equal')
+
+                    def update_qm(it):
+                        qim.set_array(Qmovie[it])
+                        qtitle.set_text(f'Timestep {it}')
+                        return [qim, qtitle]
+
+                    Qanim = FuncAnimation(Qfig, update_qm, frames=len(Qmovie), blit=True, interval=1)
+                    plt.show()
+
+                elif choice == '3' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(*zip(*Qpos))
+                    ax.annotate("", xytext=(0, 0), xy=(0.5, 0.5),
+                    arrowprops=dict(arrowstyle="->"))
+                    ax.set_title("Position")
+                    ax.set_xlabel('(m)')
+                    ax.set_ylabel('(m)')
+                    ax.set_xlim(-2.5e-9,2.5e-9)
+                    ax.set_ylim(-2.5e-9,2.5e-9)
+                    plt.show()
+
+                elif choice == '4' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(*zip(*Qmom))
+                    ax.set_title("Momentum")
+                    ax.set_xlabel('px')
+                    ax.set_ylabel('py')
+                    maxmom = np.max(np.abs(Qmom))
+                    ax.set_xlim(-maxmom,maxmom)
+                    ax.set_ylim(-maxmom,maxmom)
+                    plt.show()
+
+                elif choice == '5' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(QEkin)
+                    ax.set_title("Kinetic Energy vs Time")
+                    ax.set_xlabel('Timestep')
+                    ax.set_ylabel('E_kin')
+                    plt.show()
+
+                elif choice == '6' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(Exmovie)
+                    ax.plot(Eymovie)
+                    ax.set_title("Efield")
+                    ax.set_xlabel('timestep')
+                    ax.set_ylabel('E-field (V/m)')
+                    plt.show()
+
+                elif choice == '7' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(Hzmovie)
+                    ax.set_title("Hfield")
+                    ax.set_xlabel('timestep')
+                    ax.set_ylabel('H-field (T)')
+                    plt.show()
+
+                elif choice == '8' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(Qposx)
+                    ax.plot(Qposy)
+                    ax.set_title("Position")
+                    ax.set_xlabel('timestep')
+                    ax.set_ylabel('x/y-axis (m)')
+                    plt.show()
+
+                elif choice == '9' and self.there_is_qm:
+                    fig, ax = plt.subplots()
+                    ax.plot(Qmomx)
+                    ax.plot(Qmomy)
+                    ax.set_title("momentum")
+                    ax.set_xlabel('timestep')
+                    ax.set_ylabel('P_(x/y) (hbar*k)')
+                    plt.show()
+
+                elif choice == '0':
+                    break
+        else:
+            fig, ax = plt.subplots()
+            im = ax.pcolormesh(self.x_edges, np.flip(self.y_edges), movie[0], cmap='seismic',
+                            vmin=-self.A*1.5, vmax=self.A*1.5)
+            im.set_animated(True)  # important for blit=True
+
+            cbar = fig.colorbar(im, ax=ax)
+            cbar.set_label('Field Intensity')
+
+            title = ax.text(0.5, 1.05, '', transform=ax.transAxes,
+                            ha='center', fontsize=12, animated=True)
+
+            ax.set_xlabel('(m)')
+            ax.set_ylabel('(m)')
+            ax.set_aspect('equal')
+            ax.invert_yaxis()
+
+            def update_em(it):
+                im.set_array(movie[it])
+                title.set_text(f'Timestep {it}')
+                return [im, title]
+
+            anim = FuncAnimation(fig, update_em, frames=len(movie), blit=True, interval=2)
+            plt.show()
         if validation:
             x_exp_sim_arr= np.array(x_exp_sim_list)
             y_exp_sim_arr = np.array(y_exp_sim_list)
@@ -1059,6 +1044,7 @@ class FDTD:
             plot_observable(time_series, x_exp_sim_arr, x_exp_ana_arr, '<x> (nm)',
                             f'<x> for 20000 timesteps & (x0,y0)=({self.x0*1e9:.2f},{self.y0*1e9:.2f})')
         return endtime
+
 
 
 def UI_Size():
@@ -1326,12 +1312,12 @@ def Run():
             return testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
                     10,10,10000000,10000000000000)
         elif choice == '4':                                                                                                                                                        #omega was 50e14
-            return testing(15e-7 ,15e-7,1e8,(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15*2, omega= 50e14, timesteps=20000)
+            return testing(15e-7 ,15e-7,5e8,80*(5 * 5e-9 * 3) / (2 * 3e8 * np.pi),'circle',7.5e-7,7.5e-7,2.5e-7,'e', rel_m_eff=0.15, omega= 50e14, timesteps=200000)
         elif choice == '0':
             return Run()
 
 
-def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['0.0,0.0','0.0,0.0'], rel_m_eff=0.0, omega=0.0, timesteps=700):
+def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, sigma=10000000, gamma=10000000000000, observation_points_lstr=['7.5e-7,11.0e-7','11.0e-7,7.5e-7'], rel_m_eff=0.0, omega=0.0, timesteps=700):
     # 1. size of sim area
     # Lx, Ly = map(float,input('Please provide the lengths Lx [cm] and Ly [cm] in Lx,Ly format: ').split(','))
     # 2. PW parameters
@@ -1346,8 +1332,8 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, 
     # if bool(steps):
     #     dt,tc = map(float,steps.split(','))
     direction = '+x'
-    PW_type = 'gaussian'
-    PW = {'PW_type' : PW_type, 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction}
+    PW_type = 'sinusoidal'
+    PW = {'PW_type' : PW_type, 'A' : A , 's_pulse' : s_pulse , 'lmin' : l_min , 'dt' : dt, 'tc' : tc, 'direction' : direction, 'fc' : omega/(2*np.pi)}
     # 3. scatterers
     # shape = input('Please provide the shape of the scatterer (circle or rectangle or free or none): ')     #defien free later
     counter = 0
@@ -1387,7 +1373,7 @@ def testing(Lx:float, Ly:float,A, s_pulse,shape,xc,yc,r,material,e_r=10,m_r=10, 
 
 # to test the Drude implementation, copied numbers from graphene example of syllabus
 #  lamda ~ 5 micrometer -> ~ Thz freq
-# sigma_for_Thz = 5 / ( np.pi * 2) * 10**(-14)        # [a cm]
+# sigma_for_Thz = 5 / ( np.pi * 2) * 10**(-14)        # [a cm]  
 # lamda_for_Thz = 2 * np.pi * 10**8 * sigma_for_Thz # [cm]
 # L_for_Thz = 20 * lamda_for_Thz
 # g_for_Thz = 10**(-12)
@@ -1567,20 +1553,12 @@ def compare_numerical_analytical(sim_object):
 Lx, Ly, PW, scatter_list, obs_dict_tuples, nt = Run()
 sim = FDTD(Lx, Ly, PW, scatter_list, obs_dict_tuples)
 
-
-# print(f"Lx = {sim.Lx}, Ly = {sim.Ly}" if not sim.there_is_qm else f"Lx = {sim.Lx * 1e9:.2f} nm, Ly = {sim.Ly * 1e9:.2f} nm")
-# print(f"dt = {sim.dt}, nt = {nt}, dx_fine = {sim.dx_fine}" if not sim.there_is_qm else f"dt = {sim.dt*1e9} ns, nt = {nt}, dx_fine = {sim.dx_fine*1e9:.2f} nm")
-# print(f"lmin = {sim.lmin}, tc = {sim.tc}, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}" if not sim.there_is_qm else f"lmin = {sim.lmin*1e9:.2f} nm, tc = {sim.tc*1e9} ns, A = {sim.A}, sigma = {sim.s_pulse}, dir {sim.direction}")
-# print(f"Grid size = {sim.Nx} x {sim.Ny}")
-# print(f"V max: {np.max(sim.V)}, T_osc: {2*np.pi / 50e14 }")
-
-x1,y1 = sim.observables('pos')
-x_1_anal , y_1_anal = sim.classical_traj(-1*sim.dt)
 import time
 start = time.time()
-end = sim.iterate(int(nt), visu = False, just1D=False, saving=False,validation=True)
+end = sim.iterate(int(nt), visu = True, just1D=False, saving=False, validation=False)
 x2, y2 = sim.observables('pos')
 x_2_anal , y_2_anal = sim.classical_traj(2000*sim.dt)
+clear()
 print('===========================================================')
 print(f'analytical expectation values: \n'
       f' t=0: {x_1_anal*1e9}nm, {y_1_anal*1e9}nm \n'
@@ -1589,9 +1567,8 @@ print('===========================================================')
 print(f'simulation expectation values: \n'
       f'Sim of 10000 timesteps with x_0={x1*1e9:.2f}nm,y_0={y1*1e9:.2f}nm\n '
       f'=> <x> = {(x2)*1e9}nm, <y> = {(y2)*1e9}nm')
-
-print(f"Runtime: {end - start:.2f} seconds")
-
+clear()
+print(f"Runtime core simulation: {end - start:.2f} seconds")
 def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
     # import matplotlib.pyplot as plt
     plt.figure(figsize=(6, 5))
@@ -1604,15 +1581,14 @@ def plot_potential(V, Xc, Yc, title="Potential V(x, y)"):
     plt.tight_layout()
     plt.show()
 
-
 psi_norm = np.sqrt(np.sum((sim.psi_r ** 2 + sim.psi_i**2) * sim.dx_fine ** 2))
-# print(f'Norm of the wavefunction after the iterations: {psi_norm}')
+print(f'Norm of the wavefunction after the iterations: {psi_norm}')
 
 # plot_potential(sim.V, sim.Xc, sim.Yc)
-# plot_potential(sim.QM_rel_x, sim.Xc, sim.Yc)
-# plot_potential(sim.QM_rel_y, sim.Xc, sim.Yc)
 
-
+#sim1 = FDTD(*testing(20.0,20.0,1,0.000000000014,'circle',10,10,3,'Drude',
+                    #10,10,10000000,10000000000000,['6,10','14,10']))2          These worked with an older version of the code , amount of timesteps was 1400 and the wave moved in the positive x direction
+#
 #frequency_analysis(sim1)
 #analytical_solution(sim_ob=sim1)
 #frequency_analysis(sim1)
